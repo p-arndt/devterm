@@ -94,7 +94,8 @@ cargo fmt --all --check
 1. Launch it — you get one full-window pane running your default shell.
 2. `Ctrl+Shift+H` splits it **side by side**; `Ctrl+Shift+S` splits it **stacked**.
    Focus moves to the new pane.
-3. `Ctrl+Alt+<arrow>` moves focus between panes; the focused pane is outlined.
+3. `Ctrl+Shift+<arrow>` moves focus between panes; the focused pane is outlined.
+   `Alt+Shift+<arrow>` grows (→/↓) or shrinks (←/↑) it.
 4. Click a pane to focus it; drag to select text; `Ctrl+Shift+C` copies,
    `Ctrl+Shift+V` pastes.
 5. Scroll the wheel (or `Shift+PageUp`/`PageDown`) to move through scrollback.

@@ -341,4 +341,19 @@ mod tests {
         assert!((r2.w - 2.0 / 3.0).abs() < 1e-6);
         t.validate().unwrap();
     }
+
+    #[test]
+    fn resize_shrink_is_inverse_of_grow() {
+        // The app maps Right/Down -> grow and Left/Up -> shrink with reciprocal factors,
+        // so growing then shrinking by 1/factor must restore the original share.
+        let mut t = LayoutTree::new(p(1));
+        t.split(SplitDirection::Horizontal, p(2)); // 0.5 each
+        let width = |t: &LayoutTree| t.compute(Rect::UNIT).iter().find(|(id, _)| *id == p(2)).unwrap().1.w;
+        let before = width(&t);
+        t.resize(Direction::Right, 1.1); // grow
+        assert!(width(&t) > before + 1e-4, "grow should widen the focused pane");
+        t.resize(Direction::Left, 1.0 / 1.1); // shrink (opposite arrow, same axis)
+        assert!((width(&t) - before).abs() < 1e-6, "shrink undoes the grow");
+        t.validate().unwrap();
+    }
 }

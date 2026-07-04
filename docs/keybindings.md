@@ -12,9 +12,9 @@ to a DevTerm action are passed straight through to the shell in the focused pane
 | `Ctrl+Shift+H` | Split horizontal | New pane appears **side by side** (to the right); focus moves to it. |
 | `Ctrl+Shift+S` | Split vertical | New pane appears **stacked** (below); focus moves to it. |
 | `Ctrl+Shift+W` | Close pane | Closing the **last** pane quits DevTerm. |
-| `Ctrl+Alt+←/→/↑/↓` | Move focus | Focus the geometric neighbor in that direction. |
-| `Ctrl+Shift+←/→` | Widen focused pane | Grows the pane horizontally (~10% per press). |
-| `Ctrl+Shift+↑/↓` | Heighten focused pane | Grows the pane vertically (~10% per press). |
+| `Ctrl+Shift+←/→/↑/↓` | Move focus | Focus the geometric neighbor in that direction. |
+| `Alt+Shift+→/↓` | Grow focused pane | Widens (`→`) / heightens (`↓`) the pane ~10% per press. |
+| `Alt+Shift+←/↑` | Shrink focused pane | Narrows (`←`) / shortens (`↑`) the pane ~10% per press. |
 | `Ctrl+Shift+C` | Copy | Copies the current selection to the system clipboard. |
 | `Ctrl+Shift+V` | Paste | Pastes clipboard text (bracketed paste when the app supports it). |
 | `Ctrl+Shift+K` | Scroll line up | Into scrollback history. |
@@ -23,10 +23,15 @@ to a DevTerm action are passed straight through to the shell in the focused pane
 | `Shift+PageDown` | Scroll page down | |
 | `Ctrl+Shift+Q` | Quit | Closes DevTerm. |
 
-> **Resize is grow-only right now.** Both `Ctrl+Shift+←` and `Ctrl+Shift+→` widen the
-> focused pane (the arrow selects the *axis*, not the side), and `↑`/`↓` both make it
-> taller. A dedicated shrink binding isn't wired yet — closing/reopening a split resets
-> proportions. This is tracked as an M1 follow-up.
+> **Resize is directional.** `Alt+Shift+→` / `Alt+Shift+↓` grow the focused pane and
+> `Alt+Shift+←` / `Alt+Shift+↑` shrink it, so each axis has an opposite pair and any
+> resize is reversible. Resize acts on the nearest split along that axis; a pane with no
+> split on the axis (e.g. a lone pane, or a horizontal-only layout resized vertically)
+> doesn't move.
+>
+> **Note (GNOME/Ubuntu):** `Ctrl+Alt+←/→/↑/↓` is reserved by the desktop for switching
+> workspaces, which is why focus uses `Ctrl+Shift+arrows` and resize uses
+> `Alt+Shift+arrows` instead.
 
 ## tmux preset
 
@@ -46,8 +51,8 @@ keymap_preset = "tmux"
 | `Ctrl+Alt+%` | Split horizontal (side by side) |
 | `Ctrl+Alt+"` | Split vertical (stacked) |
 | `Ctrl+Alt+X` | Close pane |
-| `Ctrl+Alt+←/→/↑/↓` | Move focus |
-| `Ctrl+Shift+←/→/↑/↓` | Resize focused pane |
+| `Ctrl+Shift+←/→/↑/↓` | Move focus |
+| `Alt+Shift+←/→/↑/↓` | Resize focused pane (→/↓ grow, ←/↑ shrink) |
 | `Ctrl+Alt+C` / `Ctrl+Alt+V` | Copy / Paste |
 | `Ctrl+Alt+K` / `Ctrl+Alt+J` | Scroll line up / down |
 | `Ctrl+Alt+PageUp` / `Ctrl+Alt+PageDown` | Scroll page up / down |
