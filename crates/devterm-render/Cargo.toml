@@ -1,0 +1,15 @@
+[package]
+name = "devterm-render"
+description = "wgpu renderer: cell grid, glyph atlas (swash), cursor, selection, splits, DPI. (M0)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+devterm-core.workspace = true
+# Activated in M0:
+# wgpu.workspace = true
+# swash.workspace = true
+# fontdb.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "devterm-term"
+description = "Terminal emulation: VT parsing, grid, scrollback, damage, search, selection. (M0)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+devterm-core.workspace = true
+# Activated in M0 — we wrap a hardened emulator, we do NOT write our own:
+# alacritty_terminal.workspace = true

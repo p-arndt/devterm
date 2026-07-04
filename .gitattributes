@@ -1,0 +1,6 @@
+# Normalize all text to LF in the repository; check out with LF everywhere.
+* text=auto eol=lf
+
+# Binary assets (add as needed) should never be normalized, e.g.:
+# *.png binary
+# *.ttf binary
