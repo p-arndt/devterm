@@ -45,6 +45,9 @@ winit = "0.30"
 wgpu = "24"
 swash = "0.2"
 fontdb = "0.23"
+pollster = "0.4"                              # block_on for wgpu device requests
+bytemuck = { version = "1", features = ["derive"] }  # POD casts for GPU buffers
+unicode-width = "0.2"                         # East-Asian wide-char cell width
 
 # --- app chrome (M1/M2) ---
 egui = "0.31"

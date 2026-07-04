@@ -9,7 +9,13 @@ repository.workspace = true
 
 [dependencies]
 devterm-core.workspace = true
-# Activated in M0:
-# wgpu.workspace = true
-# swash.workspace = true
-# fontdb.workspace = true
+devterm-term.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+swash.workspace = true
+fontdb.workspace = true
+pollster.workspace = true
+bytemuck.workspace = true
+unicode-width.workspace = true
+anyhow.workspace = true
+log.workspace = true

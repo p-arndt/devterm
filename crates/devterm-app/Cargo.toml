@@ -17,11 +17,14 @@ devterm-pty.workspace = true
 devterm-term.workspace = true
 devterm-render.workspace = true
 devterm-config.workspace = true
-# Activated in M0/M1:
-# winit.workspace = true
+winit.workspace = true
+# Needed to match `wgpu::SurfaceError` variants returned by `Renderer::render`.
+wgpu.workspace = true
+crossbeam-channel.workspace = true
+anyhow.workspace = true
+env_logger.workspace = true
+log.workspace = true
+# egui chrome (tabs, palette) lands in M1/M2:
 # egui.workspace = true
 # egui-wgpu.workspace = true
 # egui-winit.workspace = true
-# anyhow.workspace = true
-# env_logger.workspace = true
-# log.workspace = true

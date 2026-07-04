@@ -9,8 +9,8 @@ repository.workspace = true
 
 [dependencies]
 devterm-core.workspace = true
-# Activated in M0:
-# portable-pty.workspace = true
-# crossbeam-channel.workspace = true
-# anyhow.workspace = true
-# log.workspace = true
+portable-pty.workspace = true
+crossbeam-channel.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
