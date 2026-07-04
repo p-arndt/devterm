@@ -923,9 +923,20 @@ fn load_monospace_font() -> Option<(Vec<u8>, u32)> {
     db.load_system_fonts();
 
     let candidates = [
+        // Windows / bundled developer fonts.
         fontdb::Family::Name("Cascadia Mono"),
         fontdb::Family::Name("Consolas"),
         fontdb::Family::Name("JetBrains Mono"),
+        // Common Linux monospace families.
+        fontdb::Family::Name("DejaVu Sans Mono"),
+        fontdb::Family::Name("Liberation Mono"),
+        fontdb::Family::Name("Ubuntu Mono"),
+        fontdb::Family::Name("Noto Sans Mono"),
+        // macOS.
+        fontdb::Family::Name("Menlo"),
+        fontdb::Family::Name("SF Mono"),
+        // Generic alias (fontdb maps this to its configured monospace family,
+        // e.g. "Courier New", which may be absent on minimal Linux installs).
         fontdb::Family::Monospace,
     ];
 
@@ -940,7 +951,12 @@ fn load_monospace_font() -> Option<(Vec<u8>, u32)> {
             return Some(data);
         }
     }
-    None
+
+    // Last resort: any installed face the system flags as monospaced. This keeps
+    // startup working when none of the named families exist and the generic
+    // `Monospace` alias points at an absent font.
+    let id = db.faces().find(|face| face.monospaced).map(|face| face.id)?;
+    db.with_face_data(id, |data, index| (data.to_vec(), index))
 }
 
 /// Compute cell metrics and the top-to-baseline distance for a given pixel font size.
@@ -967,6 +983,29 @@ fn compute_metrics(font_data: &[u8], font_index: u32, px: f32) -> (CellMetrics, 
     };
 
     (CellMetrics { width, height }, baseline)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The renderer aborts startup if no monospace font resolves, so font discovery
+    /// must succeed on any system that has at least one monospaced face installed.
+    /// This regressions the Linux case where only the generic/absent families matched.
+    #[test]
+    fn resolves_a_monospace_font() {
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        let has_any_mono = db.faces().any(|face| face.monospaced);
+
+        match load_monospace_font() {
+            Some((data, _index)) => assert!(!data.is_empty(), "loaded font data was empty"),
+            None => assert!(
+                !has_any_mono,
+                "a monospaced face is installed but load_monospace_font() returned None",
+            ),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
