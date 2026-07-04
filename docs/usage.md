@@ -22,18 +22,21 @@ programs side by side, each in its own real pseudo-terminal.
 
 The **focused** pane is outlined and receives your keystrokes.
 
-- **Keyboard:** `Ctrl+Alt+←/→/↑/↓` moves focus to the neighboring pane in that
+- **Keyboard:** `Ctrl+Shift+←/→/↑/↓` moves focus to the neighboring pane in that
   direction (chosen by geometry, so it does the intuitive thing in a grid).
 - **Mouse:** click any pane to focus it.
 
+> `Ctrl+Alt+arrows` would be the obvious focus chord, but GNOME/Ubuntu reserves it for
+> switching workspaces — hence `Ctrl+Shift+arrows`.
+
 ## Resizing
 
-`Ctrl+Shift+←/→` widens the focused pane; `Ctrl+Shift+↑/↓` makes it taller (about 10%
-per press, with neighbors giving up the space).
+`Alt+Shift+→` / `Alt+Shift+↓` grow the focused pane (wider / taller); `Alt+Shift+←` /
+`Alt+Shift+↑` shrink it (about 10% per press, with neighbors giving up or reclaiming the
+space). Each axis has an opposite pair, so any resize is reversible.
 
-Note the current limitation: resize is **grow-only** and the arrow picks the *axis*, not
-the direction — so left and right both widen, up and down both heighten. Dragging split
-dividers with the mouse isn't implemented yet.
+Resize adjusts the nearest split along the pressed axis; a pane with no split on that
+axis doesn't move. Dragging split dividers with the mouse isn't implemented yet.
 
 ## Scrollback
 

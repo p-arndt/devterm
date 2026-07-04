@@ -93,10 +93,16 @@ impl App {
     }
 
     fn resize_focused(state: &mut AppState, dir: Direction) {
-        // devterm-core grows the focused pane along the axis of `dir` (the sign selects the
-        // axis, not the side); factor > 1 grows, < 1 shrinks. We grow toward the pressed key.
-        const GROW: f32 = 1.1;
-        state.layout.resize(dir, GROW);
+        // devterm-core scales the focused pane's weight along the axis of `dir` (the axis,
+        // not the side, is what `resize` reads); factor > 1 grows, < 1 shrinks. Right/Down
+        // grow the focused pane, Left/Up shrink it — so the two arrows on an axis are
+        // opposites and any resize is reversible (STEP * (1/STEP) == 1).
+        const STEP: f32 = 1.1;
+        let factor = match dir {
+            Direction::Right | Direction::Down => STEP,
+            Direction::Left | Direction::Up => 1.0 / STEP,
+        };
+        state.layout.resize(dir, factor);
         Self::resize_panes(state);
         state.window.request_redraw();
     }

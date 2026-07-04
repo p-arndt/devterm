@@ -14,7 +14,7 @@ the rest of the crates are stubs to be filled in during **M0** (the walking skel
 
 | Crate | Responsibility | Milestone |
 |---|---|---|
-| `devterm-core` | Domain model: panes, layout tree, focus. **No I/O.** | done (grows) |
+| `devterm-core` | Domain model: panes, layout tree, focus. **No I/O.** | done |
 | `devterm-pty` | PTY/ConPTY: spawn, reader/writer threads, lifecycle | M0 |
 | `devterm-term` | Terminal emulation (wraps `alacritty_terminal`) | M0 |
 | `devterm-render` | wgpu renderer: cell grid, glyph atlas, splits | M0 |

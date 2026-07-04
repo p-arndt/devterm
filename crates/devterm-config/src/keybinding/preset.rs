@@ -41,14 +41,16 @@ pub fn default_keymap() -> Vec<(KeyChord, Action)> {
         (chord("ctrl+shift+h"), Action::SplitHorizontal),
         (chord("ctrl+shift+s"), Action::SplitVertical),
         (chord("ctrl+shift+w"), Action::ClosePane),
-        (chord("ctrl+alt+left"), Action::FocusLeft),
-        (chord("ctrl+alt+right"), Action::FocusRight),
-        (chord("ctrl+alt+up"), Action::FocusUp),
-        (chord("ctrl+alt+down"), Action::FocusDown),
-        (chord("ctrl+shift+left"), Action::ResizeLeft),
-        (chord("ctrl+shift+right"), Action::ResizeRight),
-        (chord("ctrl+shift+up"), Action::ResizeUp),
-        (chord("ctrl+shift+down"), Action::ResizeDown),
+        // Focus uses ctrl+shift+arrows; ctrl+alt+arrows is reserved for workspace
+        // switching on GNOME/Ubuntu, so it is deliberately avoided.
+        (chord("ctrl+shift+left"), Action::FocusLeft),
+        (chord("ctrl+shift+right"), Action::FocusRight),
+        (chord("ctrl+shift+up"), Action::FocusUp),
+        (chord("ctrl+shift+down"), Action::FocusDown),
+        (chord("alt+shift+left"), Action::ResizeLeft),
+        (chord("alt+shift+right"), Action::ResizeRight),
+        (chord("alt+shift+up"), Action::ResizeUp),
+        (chord("alt+shift+down"), Action::ResizeDown),
         (chord("ctrl+shift+c"), Action::Copy),
         (chord("ctrl+shift+v"), Action::Paste),
         (chord("ctrl+shift+k"), Action::ScrollLineUp),
@@ -71,16 +73,17 @@ pub fn tmux_preset() -> Vec<(KeyChord, Action)> {
         (chord("ctrl+alt+\""), Action::SplitVertical),
         (chord("ctrl+alt+%"), Action::SplitHorizontal),
         (chord("ctrl+alt+x"), Action::ClosePane),
-        // tmux pane navigation: prefix + arrows.
-        (chord("ctrl+alt+left"), Action::FocusLeft),
-        (chord("ctrl+alt+right"), Action::FocusRight),
-        (chord("ctrl+alt+up"), Action::FocusUp),
-        (chord("ctrl+alt+down"), Action::FocusDown),
-        // tmux resize: prefix + Ctrl-arrow; approximate with ctrl+shift+arrow.
-        (chord("ctrl+shift+left"), Action::ResizeLeft),
-        (chord("ctrl+shift+right"), Action::ResizeRight),
-        (chord("ctrl+shift+up"), Action::ResizeUp),
-        (chord("ctrl+shift+down"), Action::ResizeDown),
+        // tmux pane navigation: prefix + arrows. Approximated with ctrl+shift+arrow —
+        // ctrl+alt+arrow is reserved for workspace switching on GNOME/Ubuntu.
+        (chord("ctrl+shift+left"), Action::FocusLeft),
+        (chord("ctrl+shift+right"), Action::FocusRight),
+        (chord("ctrl+shift+up"), Action::FocusUp),
+        (chord("ctrl+shift+down"), Action::FocusDown),
+        // tmux resize: prefix + Ctrl-arrow; approximate with alt+shift+arrow.
+        (chord("alt+shift+left"), Action::ResizeLeft),
+        (chord("alt+shift+right"), Action::ResizeRight),
+        (chord("alt+shift+up"), Action::ResizeUp),
+        (chord("alt+shift+down"), Action::ResizeDown),
         // Copy-mode-ish clipboard.
         (chord("ctrl+alt+c"), Action::Copy),
         (chord("ctrl+alt+v"), Action::Paste),
