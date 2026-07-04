@@ -44,13 +44,15 @@ pub enum Action {
     ScrollPageUp,
     /// Scroll the focused pane down one page.
     ScrollPageDown,
+    /// Open `config.toml` in the user's editor.
+    OpenConfig,
     /// Quit the application.
     Quit,
 }
 
 impl Action {
     /// All actions, in declaration order. Used to prove presets are exhaustive.
-    pub const ALL: [Action; 18] = [
+    pub const ALL: [Action; 19] = [
         Action::SplitHorizontal,
         Action::SplitVertical,
         Action::ClosePane,
@@ -68,6 +70,7 @@ impl Action {
         Action::ScrollLineDown,
         Action::ScrollPageUp,
         Action::ScrollPageDown,
+        Action::OpenConfig,
         Action::Quit,
     ];
 
@@ -91,6 +94,7 @@ impl Action {
             Action::ScrollLineDown => "scroll-line-down",
             Action::ScrollPageUp => "scroll-page-up",
             Action::ScrollPageDown => "scroll-page-down",
+            Action::OpenConfig => "open-config",
             Action::Quit => "quit",
         }
     }
