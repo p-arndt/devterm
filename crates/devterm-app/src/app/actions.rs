@@ -4,11 +4,12 @@ use std::time::Instant;
 
 use devterm_config::{Action, Config};
 use devterm_core::{Direction, LayoutError, SplitDirection};
+use devterm_pty::PtyCommandSpec;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 
 use super::App;
 use super::input::{build_keymap, palette_from_theme, term_cursor_shape};
-use super::pane::build_pane;
+use super::pane::{build_pane, build_pane_with_spec};
 use super::state::{AppState, UserEvent};
 
 impl App {
@@ -45,6 +46,7 @@ impl App {
             Action::ScrollLineDown => Self::scroll(state, -1),
             Action::ScrollPageUp => Self::scroll_page(state, 1),
             Action::ScrollPageDown => Self::scroll_page(state, -1),
+            Action::OpenConfig => Self::open_config(state, config, proxy),
             Action::Quit => event_loop.exit(),
         }
     }
@@ -56,10 +58,8 @@ impl App {
         proxy: &EventLoopProxy<UserEvent>,
         direction: SplitDirection,
     ) {
-        let id = state.ids.next_pane();
         // A provisional grid; `resize_panes` immediately fixes it to the leaf's real area.
-        let size = state.window.inner_size();
-        let (cols, rows) = state.renderer.grid_size_for(size.width, size.height);
+        let (cols, rows) = Self::provisional_grid(state);
         let pane = match build_pane(config, proxy, state.palette, cols, rows) {
             Ok(pane) => pane,
             Err(err) => {
@@ -67,6 +67,53 @@ impl App {
                 return;
             }
         };
+        Self::insert_split_pane(state, direction, pane);
+    }
+
+    /// Open `config.toml` in the user's editor in a new pane stacked below the focused one.
+    ///
+    /// The editor is `$VISUAL`, else `$EDITOR`, else a platform default (`vi` on Unix,
+    /// `notepad` on Windows). The config directory is created first so the editor can
+    /// write the file on save even when it does not exist yet.
+    fn open_config(state: &mut AppState, config: &Config, proxy: &EventLoopProxy<UserEvent>) {
+        let path = Config::default_path();
+        if let Some(dir) = path.parent()
+            && let Err(err) = std::fs::create_dir_all(dir)
+        {
+            log::error!("failed to create config dir {}: {err}", dir.display());
+            return;
+        }
+
+        let (program, mut args) = resolve_editor();
+        args.push(path.to_string_lossy().into_owned());
+        let spec = PtyCommandSpec {
+            program,
+            args,
+            cwd: None,
+            env: Vec::new(),
+        };
+
+        let (cols, rows) = Self::provisional_grid(state);
+        let pane = match build_pane_with_spec(config, proxy, state.palette, cols, rows, spec) {
+            Ok(pane) => pane,
+            Err(err) => {
+                log::error!("failed to open config editor: {err}");
+                return;
+            }
+        };
+        Self::insert_split_pane(state, SplitDirection::Vertical, pane);
+    }
+
+    /// A provisional cols/rows for a freshly spawned pane; `resize_panes` corrects it to the
+    /// leaf's real area once the split lands.
+    fn provisional_grid(state: &AppState) -> (u16, u16) {
+        let size = state.window.inner_size();
+        state.renderer.grid_size_for(size.width, size.height)
+    }
+
+    /// Split the focused leaf in `direction`, insert `pane` into the new leaf, and re-layout.
+    fn insert_split_pane(state: &mut AppState, direction: SplitDirection, pane: super::pane::Pane) {
+        let id = state.ids.next_pane();
         state.layout.split(direction, id);
         state.panes.insert(id, pane);
         Self::resize_panes(state);
@@ -253,4 +300,23 @@ impl App {
             state.window.request_redraw();
         }
     }
+}
+
+/// Resolve the user's editor command into `(program, args)`.
+///
+/// Prefers `$VISUAL`, then `$EDITOR`; either may carry flags (e.g. `code --wait`), which are
+/// split off on whitespace and kept as leading args. Falls back to `notepad` on Windows and
+/// `vi` elsewhere when neither variable is set.
+fn resolve_editor() -> (String, Vec<String>) {
+    for var in ["VISUAL", "EDITOR"] {
+        let Ok(value) = std::env::var(var) else {
+            continue;
+        };
+        let mut parts = value.split_whitespace().map(str::to_owned);
+        if let Some(program) = parts.next() {
+            return (program, parts.collect());
+        }
+    }
+    let program = if cfg!(windows) { "notepad" } else { "vi" };
+    (program.to_owned(), Vec::new())
 }

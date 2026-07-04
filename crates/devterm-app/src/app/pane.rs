@@ -29,10 +29,6 @@ pub(super) fn build_pane(
     cols: u16,
     rows: u16,
 ) -> anyhow::Result<Pane> {
-    let mut term = Term::new(cols, rows, config.scrollback_lines);
-    term.set_palette(palette);
-    term.set_default_cursor_shape(term_cursor_shape(config.cursor.shape));
-
     // Resolve the shell from config; an empty program means "app default".
     let resolved = config.resolve_shell();
     let spec = if resolved.program.is_empty() {
@@ -47,6 +43,22 @@ pub(super) fn build_pane(
             env: Vec::new(),
         }
     };
+
+    build_pane_with_spec(config, proxy, palette, cols, rows, spec)
+}
+
+/// Build a `{ pty, term }` pane running an explicit command instead of the config shell.
+pub(super) fn build_pane_with_spec(
+    config: &Config,
+    proxy: &EventLoopProxy<UserEvent>,
+    palette: Palette,
+    cols: u16,
+    rows: u16,
+    spec: PtyCommandSpec,
+) -> anyhow::Result<Pane> {
+    let mut term = Term::new(cols, rows, config.scrollback_lines);
+    term.set_palette(palette);
+    term.set_default_cursor_shape(term_cursor_shape(config.cursor.shape));
 
     let proxy = proxy.clone();
     let pty = Pty::spawn(&spec, PtySize { cols, rows }, move || {

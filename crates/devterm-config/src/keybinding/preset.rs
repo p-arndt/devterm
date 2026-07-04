@@ -57,6 +57,8 @@ pub fn default_keymap() -> Vec<(KeyChord, Action)> {
         (chord("ctrl+shift+j"), Action::ScrollLineDown),
         (chord("shift+pageup"), Action::ScrollPageUp),
         (chord("shift+pagedown"), Action::ScrollPageDown),
+        // Editor-style "open settings" chord (matches VS Code's Ctrl+,).
+        (chord("ctrl+,"), Action::OpenConfig),
         (chord("ctrl+shift+q"), Action::Quit),
     ]
 }
@@ -92,6 +94,7 @@ pub fn tmux_preset() -> Vec<(KeyChord, Action)> {
         (chord("ctrl+alt+j"), Action::ScrollLineDown),
         (chord("ctrl+alt+pageup"), Action::ScrollPageUp),
         (chord("ctrl+alt+pagedown"), Action::ScrollPageDown),
+        (chord("ctrl+alt+,"), Action::OpenConfig),
         (chord("ctrl+alt+q"), Action::Quit),
     ]
 }

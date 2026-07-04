@@ -20,6 +20,7 @@ to a DevTerm action are passed straight through to the shell in the focused pane
 | `Ctrl+Shift+J` | Scroll line down | Toward the live prompt. |
 | `Shift+PageUp` | Scroll page up | One screenful, minus a row. |
 | `Shift+PageDown` | Scroll page down | |
+| `Ctrl+,` | Open config | Opens `config.toml` in your editor in a new stacked pane. |
 | `Ctrl+Shift+Q` | Quit | Closes DevTerm. |
 
 > **Resize follows the arrow.** `Alt+Shift+arrow` slides the focused pane's border in the
@@ -58,6 +59,7 @@ keymap_preset = "tmux"
 | `Ctrl+Alt+C` / `Ctrl+Alt+V` | Copy / Paste |
 | `Ctrl+Alt+K` / `Ctrl+Alt+J` | Scroll line up / down |
 | `Ctrl+Alt+PageUp` / `Ctrl+Alt+PageDown` | Scroll page up / down |
+| `Ctrl+Alt+,` | Open config |
 | `Ctrl+Alt+Q` | Quit |
 
 ## Mouse
@@ -98,7 +100,7 @@ Changes take effect **live** — save the file and DevTerm reloads it (see
   (`super` / `cmd` / `win` / `windows`).
 - **Key:** a single character (`a`, `7`, `%`) **or** a named key:
   `enter` (`return`), `tab`, `escape` (`esc`), `space`, `backspace`,
-  `delete` (`del`), `insert` (`ins`), `home`, `end`, `pageup` (`pgup`),
+  `delete` (`del`unsafe), `insert` (`ins`), `home`, `end`, `pageup` (`pgup`),
   `pagedown` (`pgdn`), `up`, `down`, `left`, `right`, `f1`…`f12`.
 
 Examples: `ctrl+shift+h`, `alt+left`, `ctrl+shift+pageup`, `shift+f5`.
@@ -112,7 +114,11 @@ Use these exact strings as the value in `[keybindings]`:
 `resize-left`, `resize-right`, `resize-up`, `resize-down`,
 `copy`, `paste`,
 `scroll-line-up`, `scroll-line-down`, `scroll-page-up`, `scroll-page-down`,
-`quit`.
+`open-config`, `quit`.
+
+The editor used by `open-config` is `$VISUAL`, then `$EDITOR`, falling back to `vi`
+(`notepad` on Windows). It opens `config.toml` in a new pane, so a terminal editor
+works out of the box.
 
 Bindings that fail to parse (unknown key or action) are silently ignored, so a typo
 disables just that one line rather than breaking the whole config.
