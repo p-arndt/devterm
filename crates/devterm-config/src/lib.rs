@@ -8,12 +8,14 @@
 
 pub mod action;
 pub mod color;
+pub mod cursor;
 pub mod keybinding;
 pub mod shell;
 pub mod theme;
 
 pub use action::Action;
 pub use color::Color;
+pub use cursor::{CursorConfig, CursorShapePref};
 pub use keybinding::{KeyChord, KeyCode, KeymapPreset, Mods, Named, default_keymap, tmux_preset};
 pub use shell::{ResolvedShell, ShellChoice};
 pub use theme::Theme;
@@ -43,10 +45,20 @@ pub struct Config {
     pub keymap_preset: KeymapPreset,
     /// Friendly shell preset; consulted when `shell_program` is empty.
     pub shell: ShellChoice,
+    /// Named built-in theme to use as the base palette (see [`Theme::builtin`]);
+    /// `None` uses the default palette. An inline `[theme]` table overrides slots
+    /// on top of this base. See [`Config::resolve_theme`].
+    pub theme_name: Option<String>,
+    /// Line-spacing multiplier applied to the cell height. `1.0` is single-spaced;
+    /// a sane range is roughly `0.8..2.0`.
+    pub line_height: f32,
     // Table-valued fields must come last: the TOML serializer rejects a scalar
     // field emitted after a `[table]` header.
-    /// Colour theme (partial `[theme]` tables merge onto the default palette).
+    /// Colour theme overlay (partial `[theme]` tables override slots on top of the
+    /// base selected by `theme_name`). See [`Config::resolve_theme`].
     pub theme: Theme,
+    /// Cursor appearance (shape preference + blink), from `[cursor]`.
+    pub cursor: CursorConfig,
     /// User keybinding overrides: chord string -> action string, from `[keybindings]`.
     pub keybindings: BTreeMap<String, String>,
 }
@@ -59,7 +71,10 @@ impl Default for Config {
             scrollback_lines: 10_000,
             shell_program: String::new(),
             shell_args: Vec::new(),
+            theme_name: None,
+            line_height: 1.0,
             theme: Theme::default(),
+            cursor: CursorConfig::default(),
             keymap_preset: KeymapPreset::default(),
             keybindings: BTreeMap::new(),
             shell: ShellChoice::default(),
@@ -104,6 +119,44 @@ impl Config {
         }
 
         bindings
+    }
+
+    /// Resolve the effective colour theme.
+    ///
+    /// Precedence (lowest to highest):
+    /// 1. The default palette ([`Theme::default`]).
+    /// 2. If [`Config::theme_name`] names a built-in ([`Theme::builtin`]), that
+    ///    palette becomes the base instead. An unknown name falls back to the
+    ///    default.
+    /// 3. Any slot the user set in the inline `[theme]` table overrides the base.
+    ///    "Set" is detected by comparing each slot against [`Theme::default`], so
+    ///    an inline slot whose value equals the default does not override a named
+    ///    base — an accepted limitation of the merge-onto-default representation.
+    pub fn resolve_theme(&self) -> Theme {
+        let base = self
+            .theme_name
+            .as_deref()
+            .and_then(Theme::builtin)
+            .unwrap_or_default();
+        let default = Theme::default();
+        let mut resolved = base;
+
+        for i in 0..16 {
+            if self.theme.ansi[i] != default.ansi[i] {
+                resolved.ansi[i] = self.theme.ansi[i];
+            }
+        }
+        if self.theme.foreground != default.foreground {
+            resolved.foreground = self.theme.foreground;
+        }
+        if self.theme.background != default.background {
+            resolved.background = self.theme.background;
+        }
+        if self.theme.cursor != default.cursor {
+            resolved.cursor = self.theme.cursor;
+        }
+
+        resolved
     }
 
     /// The default config file path (`%APPDATA%\DevTerm\config.toml`).
@@ -251,6 +304,92 @@ cursor = "#ff0000"
             config.keybindings.get("ctrl+shift+q").map(String::as_str),
             Some("close-pane")
         );
+    }
+
+    #[test]
+    fn defaults_for_new_scalar_and_table_fields() {
+        let config = Config::default();
+        assert_eq!(config.theme_name, None);
+        assert_eq!(config.line_height, 1.0);
+        assert_eq!(config.cursor.shape, CursorShapePref::Default);
+        assert!(!config.cursor.blink);
+    }
+
+    #[test]
+    fn resolve_theme_named_base_yields_builtin() {
+        let config = Config {
+            theme_name: Some("gruvbox-dark".to_owned()),
+            ..Config::default()
+        };
+        let resolved = config.resolve_theme();
+        assert_eq!(resolved, Theme::builtin("gruvbox-dark").unwrap());
+        assert_ne!(resolved, Theme::default());
+    }
+
+    #[test]
+    fn resolve_theme_defaults_without_name() {
+        assert_eq!(Config::default().resolve_theme(), Theme::default());
+    }
+
+    #[test]
+    fn resolve_theme_unknown_name_falls_back_to_default() {
+        let config = Config {
+            theme_name: Some("does-not-exist".to_owned()),
+            ..Config::default()
+        };
+        assert_eq!(config.resolve_theme(), Theme::default());
+    }
+
+    #[test]
+    fn resolve_theme_inline_slot_overrides_named_base() {
+        let text = r##"
+theme_name = "gruvbox-dark"
+
+[theme]
+cursor = "#ff0000"
+"##;
+        let config: Config = toml::from_str(text).expect("parse config with named base + overlay");
+        let resolved = config.resolve_theme();
+        // The overridden slot wins.
+        assert_eq!(resolved.cursor, Color::new(0xff, 0x00, 0x00));
+        // Untouched slots come from the gruvbox base, not the default.
+        let gruvbox = Theme::builtin("gruvbox-dark").unwrap();
+        assert_eq!(resolved.foreground, gruvbox.foreground);
+        assert_eq!(resolved.background, gruvbox.background);
+        assert_eq!(resolved.ansi, gruvbox.ansi);
+    }
+
+    #[test]
+    fn line_height_and_cursor_round_trip_and_merge() {
+        let text = r##"
+line_height = 1.4
+
+[cursor]
+shape = "beam"
+blink = true
+"##;
+        let config: Config = toml::from_str(text).expect("parse line_height + cursor");
+        assert_eq!(config.line_height, 1.4);
+        assert_eq!(config.cursor.shape, CursorShapePref::Beam);
+        assert!(config.cursor.blink);
+
+        // Full round-trip through TOML preserves the values.
+        let out = toml::to_string(&config).expect("serialize config");
+        let back: Config = toml::from_str(&out).expect("re-parse config");
+        assert_eq!(back.line_height, 1.4);
+        assert_eq!(back.cursor.shape, CursorShapePref::Beam);
+        assert!(back.cursor.blink);
+    }
+
+    #[test]
+    fn partial_cursor_table_merges_onto_default() {
+        // Only `shape` set: `blink` keeps its default (false).
+        let text = "[cursor]\nshape = \"block\"\n";
+        let config: Config = toml::from_str(text).expect("parse partial cursor table");
+        assert_eq!(config.cursor.shape, CursorShapePref::Block);
+        assert!(!config.cursor.blink);
+        // Other config fields keep their defaults.
+        assert_eq!(config.line_height, 1.0);
     }
 
     #[test]

@@ -65,7 +65,8 @@ keymap_preset = "tmux"
 | Gesture | Effect |
 |---|---|
 | **Left click** | Focus the pane under the pointer. |
-| **Left click + drag** | Select text in that pane (highlighted as inverse video). |
+| **Left click + drag** (inside a pane) | Select text in that pane (highlighted as inverse video). |
+| **Drag a split border** | Resize the panes on either side (the cursor turns into a resize arrow on hover). |
 | **Wheel up / down** | Scroll the pane **under the pointer** through its scrollback. |
 
 Selection stays put after you release, so you can then press `Ctrl+Shift+C` to copy it.

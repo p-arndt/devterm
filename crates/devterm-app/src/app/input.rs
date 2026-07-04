@@ -8,8 +8,10 @@ use std::collections::HashMap;
 use winit::event::KeyEvent;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-use devterm_config::{Action, Color, Config, KeyChord, KeyCode, Mods, Named, Theme};
-use devterm_term::{Palette, Rgb};
+use devterm_config::{
+    Action, Color, Config, CursorShapePref, KeyChord, KeyCode, Mods, Named, Theme,
+};
+use devterm_term::{CursorShape, Palette, Rgb};
 
 /// Translate a pressed key into a [`KeyChord`], or `None` for pure modifiers / dead keys.
 pub(super) fn chord_from_event(event: &KeyEvent, mods: ModifiersState) -> Option<KeyChord> {
@@ -42,6 +44,20 @@ pub(super) fn palette_from_theme(theme: &Theme) -> Palette {
         foreground: convert(theme.foreground),
         background: convert(theme.background),
         cursor: convert(theme.cursor),
+    }
+}
+
+/// Map a config [`CursorShapePref`] onto the term's fallback [`CursorShape`].
+///
+/// The term only overrides a *reported* `Block` (alacritty's default) with this fallback,
+/// so `Block` is the neutral value: [`CursorShapePref::Default`] maps to it and thereby
+/// lets the running program's own DECSCUSR choice win. Applying the mapped shape on every
+/// pane also makes reloads correct — switching back to `Default` resets the override.
+pub(super) fn term_cursor_shape(pref: CursorShapePref) -> CursorShape {
+    match pref {
+        CursorShapePref::Default | CursorShapePref::Block => CursorShape::Block,
+        CursorShapePref::Underline => CursorShape::Underline,
+        CursorShapePref::Beam => CursorShape::Beam,
     }
 }
 
@@ -134,6 +150,24 @@ mod tests {
         // A different theme yields a different background.
         let gruvbox = palette_from_theme(&Theme::builtin("gruvbox-dark").unwrap());
         assert_ne!(gruvbox.background, palette.background);
+    }
+
+    #[test]
+    fn cursor_pref_maps_to_term_shape() {
+        // Default is neutral (Block), letting the program's own shape win.
+        assert_eq!(
+            term_cursor_shape(CursorShapePref::Default),
+            CursorShape::Block
+        );
+        assert_eq!(
+            term_cursor_shape(CursorShapePref::Block),
+            CursorShape::Block
+        );
+        assert_eq!(
+            term_cursor_shape(CursorShapePref::Underline),
+            CursorShape::Underline
+        );
+        assert_eq!(term_cursor_shape(CursorShapePref::Beam), CursorShape::Beam);
     }
 
     #[test]

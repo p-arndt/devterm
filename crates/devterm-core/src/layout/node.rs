@@ -2,11 +2,16 @@
 //! turns a subtree into per-pane rectangles.
 
 use super::SplitDirection;
+use super::tree::{Gutter, GutterId};
 use crate::geometry::Rect;
 use crate::id::PaneId;
 
 /// Minimum weight so a pane never collapses to zero when shrunk.
 const MIN_WEIGHT: f32 = 0.05;
+
+/// Half-thickness of a gutter's hit rectangle, as a fraction of the parent split's length
+/// along its axis. The full strip is twice this, centred on the boundary.
+const GUTTER_HALF_FRACTION: f32 = 0.01;
 
 /// A weighted child inside a split.
 #[derive(Clone, Debug, PartialEq)]
@@ -208,6 +213,117 @@ impl LayoutNode {
                 false
             }
         }
+    }
+
+    /// Computes the rectangles the direct children of this split occupy within `rect`, in
+    /// arrangement order. Empty for a leaf.
+    fn child_rects(&self, rect: Rect) -> Vec<Rect> {
+        let LayoutNode::Split {
+            direction,
+            children,
+        } = self
+        else {
+            return Vec::new();
+        };
+        let total: f32 = children.iter().map(|c| c.weight).sum();
+        let mut offset = 0.0;
+        let mut out = Vec::with_capacity(children.len());
+        for c in children {
+            let frac = c.weight / total;
+            let cr = match direction {
+                SplitDirection::Horizontal => {
+                    Rect::new(rect.x + offset, rect.y, rect.w * frac, rect.h)
+                }
+                SplitDirection::Vertical => {
+                    Rect::new(rect.x, rect.y + offset, rect.w, rect.h * frac)
+                }
+            };
+            offset += match direction {
+                SplitDirection::Horizontal => rect.w * frac,
+                SplitDirection::Vertical => rect.h * frac,
+            };
+            out.push(cr);
+        }
+        out
+    }
+
+    /// Emits a [`Gutter`] for every interior split boundary in this subtree within `rect`.
+    ///
+    /// `next` is the running boundary ordinal in a deterministic pre-order traversal: at each
+    /// split the boundaries between its own adjacent children are numbered first, then the
+    /// children are visited left-to-right. [`Self::drag_gutter`] walks the tree in exactly the
+    /// same order, so a [`GutterId`] round-trips to the same boundary in an unchanged tree.
+    pub(crate) fn gutters_into(&self, rect: Rect, next: &mut u32, out: &mut Vec<Gutter>) {
+        let LayoutNode::Split {
+            direction,
+            children,
+        } = self
+        else {
+            return;
+        };
+        let rects = self.child_rects(rect);
+        // One boundary sits on the trailing edge of every child but the last.
+        let interior = children.len().saturating_sub(1);
+        for r in rects.iter().take(interior) {
+            let id = GutterId(*next);
+            *next += 1;
+            let bounds = match direction {
+                SplitDirection::Horizontal => {
+                    let bx = r.x + r.w;
+                    let half = rect.w * GUTTER_HALF_FRACTION;
+                    Rect::new(bx - half, rect.y, half * 2.0, rect.h)
+                }
+                SplitDirection::Vertical => {
+                    let by = r.y + r.h;
+                    let half = rect.h * GUTTER_HALF_FRACTION;
+                    Rect::new(rect.x, by - half, rect.w, half * 2.0)
+                }
+            };
+            out.push(Gutter {
+                bounds,
+                axis: *direction,
+                id,
+            });
+        }
+        for (c, cr) in children.iter().zip(rects.iter()) {
+            c.node.gutters_into(*cr, next, out);
+        }
+    }
+
+    /// Shifts weight across the boundary identified by `target`, growing the lower-coordinate
+    /// child by `delta` fraction of the parent split's length and shrinking its higher
+    /// neighbour by the same, clamped so neither drops below [`MIN_WEIGHT`]. `next` numbers
+    /// boundaries exactly as [`Self::gutters_into`] does. Returns `true` once the boundary is
+    /// found and moved.
+    pub(crate) fn drag_gutter(&mut self, target: GutterId, next: &mut u32, delta: f32) -> bool {
+        let LayoutNode::Split { children, .. } = self else {
+            return false;
+        };
+        let n = children.len();
+        for i in 0..n.saturating_sub(1) {
+            let id = GutterId(*next);
+            *next += 1;
+            if id == target {
+                let a = children[i].weight;
+                let b = children[i + 1].weight;
+                let pair = a + b;
+                // `delta` is a fraction of the whole split; weights map linearly to length,
+                // so a fraction of the total weight moves the boundary that far.
+                let total: f32 = children.iter().map(|c| c.weight).sum();
+                let lo = MIN_WEIGHT;
+                let hi = (pair - MIN_WEIGHT).max(MIN_WEIGHT);
+                let na = (a + delta * total).clamp(lo, hi);
+                children[i].weight = na;
+                children[i + 1].weight = pair - na;
+                return true;
+            }
+        }
+        for c in children.iter_mut() {
+            if c.node.drag_gutter(target, next, delta) {
+                return true;
+            }
+        }
+        false
     }
 
     pub(crate) fn validate(&self) -> Result<(), &'static str> {

@@ -1,11 +1,13 @@
 //! Bound-action dispatch, the individual action handlers, and config hot-reload.
 
+use std::time::Instant;
+
 use devterm_config::{Action, Config};
 use devterm_core::{Direction, LayoutError, SplitDirection};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 
 use super::App;
-use super::input::{build_keymap, palette_from_theme};
+use super::input::{build_keymap, palette_from_theme, term_cursor_shape};
 use super::pane::build_pane;
 use super::state::{AppState, UserEvent};
 
@@ -68,6 +70,7 @@ impl App {
         state.layout.split(direction, id);
         state.panes.insert(id, pane);
         Self::resize_panes(state);
+        state.force_present = true;
         state.window.request_redraw();
     }
 
@@ -78,6 +81,7 @@ impl App {
             Ok(()) => {
                 state.panes.remove(&focused);
                 Self::resize_panes(state);
+                state.force_present = true;
                 state.window.request_redraw();
             }
             // Closing the last pane quits DevTerm (parity with closing the window).
@@ -88,6 +92,8 @@ impl App {
 
     fn focus(state: &mut AppState, dir: Direction) {
         if state.layout.move_focus(dir) {
+            // Focus changes no terminal, so force a present to move the highlight.
+            state.force_present = true;
             state.window.request_redraw();
         }
     }
@@ -99,6 +105,7 @@ impl App {
         const STEP: f32 = 1.1;
         state.layout.resize_directional(dir, STEP);
         Self::resize_panes(state);
+        state.force_present = true;
         state.window.request_redraw();
     }
 
@@ -106,6 +113,7 @@ impl App {
         let focused = state.layout.focused();
         if let Some(pane) = state.panes.get_mut(&focused) {
             pane.term.scroll_display(lines);
+            state.force_present = true;
             state.window.request_redraw();
         }
     }
@@ -179,8 +187,10 @@ impl App {
 
     // --- config hot-reload ----------------------------------------------------
 
-    /// Reload `config.toml` from disk and re-apply the keymap, palette and (if changed)
-    /// font size. Shell changes take effect on the next spawned pane.
+    /// Reload `config.toml` from disk and re-apply everything hot-swappable: keymap, resolved
+    /// theme palette, cursor shape, and (when changed) font family, font size and line height
+    /// — re-deriving every pane's grid when the cell metrics move. Shell changes take effect
+    /// on the next spawned pane.
     pub(super) fn reload_config(&mut self) {
         let path = Config::default_path();
         let config = match Config::load(&path) {
@@ -192,9 +202,21 @@ impl App {
         };
         log::info!("reloaded config from {}", path.display());
 
-        let palette = palette_from_theme(&config.theme);
-        let font_changed = (config.font_size - self.config.font_size).abs() > f32::EPSILON;
+        // Resolve the effective theme (named base + inline overlay) so `theme_name` applies.
+        let palette = palette_from_theme(&config.resolve_theme());
+        let cursor_shape = term_cursor_shape(config.cursor.shape);
+        // Detect metric-affecting changes against the previous config before swapping.
+        let font_size_changed = (config.font_size - self.config.font_size).abs() > f32::EPSILON;
+        let font_family_changed = config.font_family != self.config.font_family;
+        let line_height_changed =
+            (config.line_height - self.config.line_height).abs() > f32::EPSILON;
         let font_size = config.font_size;
+        let font_family = if config.font_family.is_empty() {
+            None
+        } else {
+            Some(config.font_family.clone())
+        };
+        let line_height = config.line_height;
         self.config = config;
 
         if let Some(state) = self.state.as_mut() {
@@ -202,11 +224,32 @@ impl App {
             state.palette = palette;
             for pane in state.panes.values_mut() {
                 pane.term.set_palette(palette);
+                pane.term.set_default_cursor_shape(cursor_shape);
             }
-            if font_changed {
+
+            // Font family / size / line height all move the cell metrics; apply each that
+            // changed, then re-derive every pane's cols/rows once.
+            let mut metrics_changed = false;
+            if font_family_changed {
+                state.renderer.set_font_family(font_family);
+                metrics_changed = true;
+            }
+            if font_size_changed {
                 state.renderer.set_font_size(font_size);
+                metrics_changed = true;
+            }
+            if line_height_changed {
+                state.renderer.set_line_height(line_height);
+                metrics_changed = true;
+            }
+            if metrics_changed {
                 Self::resize_panes(state);
             }
+
+            // Reset the blink phase so a toggled `cursor.blink` takes effect cleanly.
+            state.blink_visible = true;
+            state.last_blink_toggle = Instant::now();
+            state.force_present = true;
             state.window.request_redraw();
         }
     }
