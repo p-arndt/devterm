@@ -61,6 +61,10 @@ serde_norway = "0.9"          # maintained YAML fork (serde_yaml is archived)
 # --- concurrency / IPC ---
 crossbeam-channel = "0.5"
 
+# --- clipboard + config hot-reload (M1) ---
+arboard = "3"                                # cross-platform clipboard (Windows/X11/Wayland)
+notify = "8"                                 # filesystem watcher for config.toml hot-reload
+
 # --- CLI (M2) ---
 clap = { version = "4", features = ["derive"] }
 

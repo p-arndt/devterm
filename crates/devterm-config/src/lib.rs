@@ -6,7 +6,20 @@
 
 #![forbid(unsafe_code)]
 
+pub mod action;
+pub mod color;
+pub mod keybinding;
+pub mod shell;
+pub mod theme;
+
+pub use action::Action;
+pub use color::Color;
+pub use keybinding::{KeyChord, KeyCode, KeymapPreset, Mods, Named, default_keymap, tmux_preset};
+pub use shell::{ResolvedShell, ShellChoice};
+pub use theme::Theme;
+
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// User configuration, deserialized from `config.toml`.
@@ -26,6 +39,16 @@ pub struct Config {
     pub shell_program: String,
     /// Extra arguments passed to the shell.
     pub shell_args: Vec<String>,
+    /// Which built-in keymap to start from before applying `keybindings`.
+    pub keymap_preset: KeymapPreset,
+    /// Friendly shell preset; consulted when `shell_program` is empty.
+    pub shell: ShellChoice,
+    // Table-valued fields must come last: the TOML serializer rejects a scalar
+    // field emitted after a `[table]` header.
+    /// Colour theme (partial `[theme]` tables merge onto the default palette).
+    pub theme: Theme,
+    /// User keybinding overrides: chord string -> action string, from `[keybindings]`.
+    pub keybindings: BTreeMap<String, String>,
 }
 
 impl Default for Config {
@@ -36,6 +59,10 @@ impl Default for Config {
             scrollback_lines: 10_000,
             shell_program: String::new(),
             shell_args: Vec::new(),
+            theme: Theme::default(),
+            keymap_preset: KeymapPreset::default(),
+            keybindings: BTreeMap::new(),
+            shell: ShellChoice::default(),
         }
     }
 }
@@ -53,6 +80,30 @@ impl Config {
         };
         let config = toml::from_str(&text)?;
         Ok(config)
+    }
+
+    /// Resolve the effective keybindings.
+    ///
+    /// Starts from [`Config::keymap_preset`] (Default or Tmux), then applies the
+    /// user overrides in [`Config::keybindings`]: each key is parsed as a
+    /// [`KeyChord`] and each value as an [`Action`]. A later binding for the same
+    /// chord replaces the earlier one. Entries that fail to parse are silently
+    /// skipped (the `log` crate is not a dependency of this crate).
+    pub fn resolve_keybindings(&self) -> Vec<(KeyChord, Action)> {
+        let mut bindings = self.keymap_preset.bindings();
+
+        for (chord_str, action_str) in &self.keybindings {
+            if let Ok(chord) = chord_str.parse::<KeyChord>()
+                && let Ok(action) = action_str.parse::<Action>()
+            {
+                match bindings.iter_mut().find(|(c, _)| *c == chord) {
+                    Some(existing) => existing.1 = action,
+                    None => bindings.push((chord, action)),
+                }
+            }
+        }
+
+        bindings
     }
 
     /// The default config file path (`%APPDATA%\DevTerm\config.toml`).
@@ -116,6 +167,90 @@ mod tests {
         let result = Config::load(&path);
         let _ = std::fs::remove_file(&path);
         assert!(result.is_err(), "invalid TOML should surface an error");
+    }
+
+    #[test]
+    fn resolve_keybindings_defaults_to_preset() {
+        let config = Config::default();
+        let bindings = config.resolve_keybindings();
+        assert_eq!(bindings, default_keymap());
+    }
+
+    #[test]
+    fn resolve_keybindings_applies_override() {
+        let mut config = Config::default();
+        // Rebind the default Copy chord (ctrl+shift+c) to Quit.
+        config
+            .keybindings
+            .insert("ctrl+shift+c".to_owned(), "quit".to_owned());
+        let bindings = config.resolve_keybindings();
+
+        let chord: KeyChord = "ctrl+shift+c".parse().unwrap();
+        let action = bindings.iter().find(|(c, _)| *c == chord).map(|(_, a)| *a);
+        assert_eq!(action, Some(Action::Quit));
+        // Only the one binding for that chord exists (replaced, not appended).
+        assert_eq!(bindings.iter().filter(|(c, _)| *c == chord).count(), 1);
+    }
+
+    #[test]
+    fn resolve_keybindings_adds_new_chord() {
+        let mut config = Config::default();
+        config
+            .keybindings
+            .insert("logo+f1".to_owned(), "paste".to_owned());
+        let bindings = config.resolve_keybindings();
+        let chord: KeyChord = "logo+f1".parse().unwrap();
+        assert!(
+            bindings
+                .iter()
+                .any(|(c, a)| *c == chord && *a == Action::Paste)
+        );
+    }
+
+    #[test]
+    fn resolve_keybindings_skips_unparseable() {
+        let mut config = Config::default();
+        config
+            .keybindings
+            .insert("not a chord".to_owned(), "quit".to_owned());
+        config
+            .keybindings
+            .insert("ctrl+shift+z".to_owned(), "not-an-action".to_owned());
+        // Should not panic and should equal the untouched preset.
+        assert_eq!(config.resolve_keybindings(), default_keymap());
+    }
+
+    #[test]
+    fn tmux_preset_selectable_via_config() {
+        let config = Config {
+            keymap_preset: KeymapPreset::Tmux,
+            ..Config::default()
+        };
+        assert_eq!(config.resolve_keybindings(), tmux_preset());
+    }
+
+    #[test]
+    fn new_fields_round_trip_and_merge() {
+        let text = r##"
+keymap_preset = "tmux"
+shell = "git-bash"
+
+[theme]
+cursor = "#ff0000"
+
+[keybindings]
+"ctrl+shift+q" = "close-pane"
+"##;
+        let config: Config = toml::from_str(text).expect("parse config with new fields");
+        assert_eq!(config.keymap_preset, KeymapPreset::Tmux);
+        assert_eq!(config.shell, ShellChoice::GitBash);
+        assert_eq!(config.theme.cursor, Color::new(0xff, 0x00, 0x00));
+        // Untouched theme field keeps its default.
+        assert_eq!(config.theme.foreground, Color::new(0xd0, 0xd0, 0xd0));
+        assert_eq!(
+            config.keybindings.get("ctrl+shift+q").map(String::as_str),
+            Some("close-pane")
+        );
     }
 
     #[test]

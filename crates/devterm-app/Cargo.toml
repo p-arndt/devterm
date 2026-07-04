@@ -24,6 +24,9 @@ crossbeam-channel.workspace = true
 anyhow.workspace = true
 env_logger.workspace = true
 log.workspace = true
+# System clipboard (Copy/Paste) and config.toml hot-reload watcher (M1).
+arboard.workspace = true
+notify.workspace = true
 # egui chrome (tabs, palette) lands in M1/M2:
 # egui.workspace = true
 # egui-wgpu.workspace = true

@@ -107,26 +107,26 @@ Alle Operationen (split, close, resize, focus-move, zoom) sind reine Funktionen 
 
 Ein durchgestochener Pfad, um alle Risiko-Integrationen früh zu treffen:
 
-- [ ] Cargo-Workspace + CI (GitHub Actions, Windows-Runner: fmt, clippy, test, cargo-deny)
-- [ ] winit-Fenster mit wgpu-Surface
-- [ ] Eine ConPTY-Session (PowerShell) via portable-pty
-- [ ] Output → alacritty_terminal → naives Grid-Rendering (ein Font, kein Fallback)
-- [ ] Tastatur-Input → PTY (inkl. Ctrl-Sequenzen), Resize Fenster → PTY
-- [ ] **Abnahme:** `vim`, `htop` (in WSL), Claude Code und `git log` laufen sichtbar korrekt und ohne Flackern
+- [x] Cargo-Workspace + CI (GitHub Actions, Windows-Runner: fmt, clippy, test, cargo-deny)
+- [x] winit-Fenster mit wgpu-Surface
+- [x] Eine ConPTY-Session (PowerShell) via portable-pty
+- [x] Output → alacritty_terminal → naives Grid-Rendering (ein Font, kein Fallback)
+- [x] Tastatur-Input → PTY (inkl. Ctrl-Sequenzen), Resize Fenster → PTY
+- [x] **Abnahme:** `vim`, `htop` (in WSL), Claude Code und `git log` laufen sichtbar korrekt und ohne Flackern
 
 M0 beweist die Kernthese. Alles danach ist Ausbau.
 
 ### M1 — v0.1 "täglich benutzbar" (Ziel: +4–6 Wochen)
 
-- [ ] Splits horizontal/vertikal, Panes schließen, Fokus-Navigation (Keyboard + Maus)
-- [ ] Pane-Resize mit Maus und Keyboard
-- [ ] Scrollback (konfigurierbares Limit) + Maus-/Keyboard-Scrolling
-- [ ] Selektion + Copy/Paste (Windows-Clipboard, bracketed paste)
-- [ ] Font-Fallback-Kette (Nerd Font Symbole, Emoji, CJK) + DPI-Wechsel
-- [ ] Shell-Auswahl: PowerShell 7, Windows PowerShell, cmd, Git Bash, WSL
-- [ ] `config.toml` (Font, Größe, Theme, Shell, Scrollback) mit Hot-Reload
-- [ ] Keybindings konfigurierbar (Default-Keymap + tmux-Preset)
-- [ ] Damage-Tracking + DECSET-2026-Support (Anti-Flacker komplett)
+- [x] Splits horizontal/vertikal, Panes schließen, Fokus-Navigation (Keyboard + Maus-Klick)
+- [x] Pane-Resize (Keyboard) — Maus-Divider-Drag noch offen
+- [x] Scrollback (konfigurierbares Limit) + Maus-/Keyboard-Scrolling
+- [x] Selektion (Maus-Drag) + Copy/Paste (System-Clipboard via `arboard`, bracketed paste)
+- [x] Font-Fallback-Kette (Nerd Font Symbole, CJK; Farb-Emoji monochrom → M4) + DPI-/Font-Size-Hot-Reload
+- [x] Shell-Auswahl: PowerShell 7, Windows PowerShell, cmd, Git Bash, WSL
+- [x] `config.toml` (Font, Größe, Theme, Shell, Scrollback) mit Hot-Reload (`notify`)
+- [x] Keybindings konfigurierbar (Default-Keymap + tmux-Preset als prefixfreie Direktbindungen)
+- [x] DECSET-2026-Support (Anti-Flacker) — feingranulares Damage-Tracking pro Zeile noch offen
 - [ ] **Abnahme:** Du benutzt DevTerm eine Woche als Haupt-Terminal, ohne zu Windows Terminal zurückzuwechseln
 
 ### M2 — v0.2 "projektorientiert" (Ziel: +4–6 Wochen)
