@@ -1,0 +1,16 @@
+[package]
+name = "devterm-pty"
+description = "PTY/ConPTY layer: process spawning, reader/writer threads, lifecycle. (M0)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+devterm-core.workspace = true
+# Activated in M0:
+# portable-pty.workspace = true
+# crossbeam-channel.workspace = true
+# anyhow.workspace = true
+# log.workspace = true

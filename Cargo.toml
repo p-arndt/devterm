@@ -1,0 +1,80 @@
+# DevTerm — Cargo workspace
+#
+# Dependency direction (strict):  app -> {render, term, pty, config, plugin} -> core
+# `core` knows nothing about wgpu, winit, or ConPTY.
+#
+# The external versions below are centrally maintained (single source of truth). They are
+# only resolved once a crate actually uses them via `{ workspace = true }` — so the "heavy"
+# deps are declared here as a registry and activated per milestone, verified against the
+# real published version on first use.
+
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT OR Apache-2.0"
+authors = ["Patrick Arndt <patrick.arndt@gemue.de>"]
+repository = "https://github.com/patrickarndt/devterm"
+
+[workspace.dependencies]
+# --- internal crates ---
+devterm-core = { path = "crates/devterm-core" }
+devterm-pty = { path = "crates/devterm-pty" }
+devterm-term = { path = "crates/devterm-term" }
+devterm-render = { path = "crates/devterm-render" }
+devterm-config = { path = "crates/devterm-config" }
+devterm-plugin = { path = "crates/devterm-plugin" }
+
+# --- base / everywhere ---
+anyhow = "1"
+thiserror = "2"
+log = "0.4"
+env_logger = "0.11"
+serde = { version = "1", features = ["derive"] }
+
+# --- terminal emulation & PTY (M0) ---
+alacritty_terminal = "0.25"
+portable-pty = "0.9"
+
+# --- window / rendering (M0) ---
+winit = "0.30"
+wgpu = "24"
+swash = "0.2"
+fontdb = "0.23"
+
+# --- app chrome (M1/M2) ---
+egui = "0.31"
+egui-wgpu = "0.31"
+egui-winit = "0.31"
+
+# --- config / layouts ---
+toml = "0.8"
+serde_norway = "0.9"          # maintained YAML fork (serde_yaml is archived)
+
+# --- concurrency / IPC ---
+crossbeam-channel = "0.5"
+
+# --- CLI (M2) ---
+clap = { version = "4", features = ["derive"] }
+
+# --- Windows APIs (ConPTY, named pipes, global hotkey) ---
+windows = "0.59"
+
+# --- plugins (M3) ---
+wasmtime = "28"
+
+# --- tests ---
+proptest = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+# faster iteration; terminal rendering is noticeably sluggish without any optimization
+opt-level = 1

@@ -1,0 +1,27 @@
+[package]
+name = "devterm-app"
+description = "DevTerm application binary: window, input routing, chrome, IPC. Wires everything."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "devterm"
+path = "src/main.rs"
+
+[dependencies]
+devterm-core.workspace = true
+devterm-pty.workspace = true
+devterm-term.workspace = true
+devterm-render.workspace = true
+devterm-config.workspace = true
+# Activated in M0/M1:
+# winit.workspace = true
+# egui.workspace = true
+# egui-wgpu.workspace = true
+# egui-winit.workspace = true
+# anyhow.workspace = true
+# env_logger.workspace = true
+# log.workspace = true

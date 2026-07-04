@@ -1,0 +1,19 @@
+[package]
+name = "devterm-core"
+description = "DevTerm domain core: panes, layout tree, focus. No I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Serialization of the layout tree (for session persistence, M2).
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true

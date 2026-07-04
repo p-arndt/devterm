@@ -1,0 +1,17 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Lockfile: for a binary workspace we commit Cargo.lock (reproducible builds)
+# -> do NOT ignore it.
+
+# IDE / OS
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
+
+# local, unversioned config / secrets
+/.env
+/*.local.toml
