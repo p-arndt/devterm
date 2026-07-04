@@ -31,12 +31,16 @@ The **focused** pane is outlined and receives your keystrokes.
 
 ## Resizing
 
-`Alt+Shift+→` / `Alt+Shift+↓` grow the focused pane (wider / taller); `Alt+Shift+←` /
-`Alt+Shift+↑` shrink it (about 10% per press, with neighbors giving up or reclaiming the
-space). Each axis has an opposite pair, so any resize is reversible.
+`Alt+Shift+arrow` moves the focused pane's **border in the arrow's direction** (about 10%
+per press). If a pane borders it on that side, the focused pane **grows** into it; if the
+arrow points at the window edge, it **shrinks**. So on the right pane of a split, `←` grows
+it leftward and `→` shrinks it back — the border tracks the key, and the two arrows on an
+axis are exact inverses.
 
-Resize adjusts the nearest split along the pressed axis; a pane with no split on that
-axis doesn't move. Dragging split dividers with the mouse isn't implemented yet.
+Resize adjusts the nearest split along the pressed axis; a pane with no split on that axis
+doesn't move. (The middle pane of a flat three-way split has a neighbor on both sides, so
+both arrows grow it — shrink it by growing one of its siblings instead.) Dragging split
+dividers with the mouse isn't implemented yet.
 
 ## Scrollback
 

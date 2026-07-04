@@ -93,16 +93,11 @@ impl App {
     }
 
     fn resize_focused(state: &mut AppState, dir: Direction) {
-        // devterm-core scales the focused pane's weight along the axis of `dir` (the axis,
-        // not the side, is what `resize` reads); factor > 1 grows, < 1 shrinks. Right/Down
-        // grow the focused pane, Left/Up shrink it — so the two arrows on an axis are
-        // opposites and any resize is reversible (STEP * (1/STEP) == 1).
+        // The pressed arrow moves the focused pane's border in that direction: grow toward a
+        // neighbor, shrink toward the window edge. So on the right pane of a split, Left grows
+        // it leftward and Right shrinks it — the border follows the key. ~10% per press.
         const STEP: f32 = 1.1;
-        let factor = match dir {
-            Direction::Right | Direction::Down => STEP,
-            Direction::Left | Direction::Up => 1.0 / STEP,
-        };
-        state.layout.resize(dir, factor);
+        state.layout.resize_directional(dir, STEP);
         Self::resize_panes(state);
         state.window.request_redraw();
     }

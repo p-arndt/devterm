@@ -13,8 +13,7 @@ to a DevTerm action are passed straight through to the shell in the focused pane
 | `Ctrl+Shift+S` | Split vertical | New pane appears **stacked** (below); focus moves to it. |
 | `Ctrl+Shift+W` | Close pane | Closing the **last** pane quits DevTerm. |
 | `Ctrl+Shift+←/→/↑/↓` | Move focus | Focus the geometric neighbor in that direction. |
-| `Alt+Shift+→/↓` | Grow focused pane | Widens (`→`) / heightens (`↓`) the pane ~10% per press. |
-| `Alt+Shift+←/↑` | Shrink focused pane | Narrows (`←`) / shortens (`↑`) the pane ~10% per press. |
+| `Alt+Shift+←/→/↑/↓` | Resize focused pane | Moves its border toward the arrow: grow into a neighbor, shrink at the window edge (~10% per press). |
 | `Ctrl+Shift+C` | Copy | Copies the current selection to the system clipboard. |
 | `Ctrl+Shift+V` | Paste | Pastes clipboard text (bracketed paste when the app supports it). |
 | `Ctrl+Shift+K` | Scroll line up | Into scrollback history. |
@@ -23,11 +22,14 @@ to a DevTerm action are passed straight through to the shell in the focused pane
 | `Shift+PageDown` | Scroll page down | |
 | `Ctrl+Shift+Q` | Quit | Closes DevTerm. |
 
-> **Resize is directional.** `Alt+Shift+→` / `Alt+Shift+↓` grow the focused pane and
-> `Alt+Shift+←` / `Alt+Shift+↑` shrink it, so each axis has an opposite pair and any
-> resize is reversible. Resize acts on the nearest split along that axis; a pane with no
-> split on the axis (e.g. a lone pane, or a horizontal-only layout resized vertically)
-> doesn't move.
+> **Resize follows the arrow.** `Alt+Shift+arrow` slides the focused pane's border in the
+> pressed direction: it **grows** the pane when a neighbor sits on that side and **shrinks**
+> it when the arrow points at the window edge. On the right pane of a split, `←` grows it
+> leftward and `→` shrinks it back — the opposite arrows on an axis are exact inverses.
+> Resize acts on the nearest split along that axis; a pane with no split on the axis (e.g. a
+> lone pane, or a horizontal-only layout resized vertically) doesn't move. The middle pane
+> of a flat three-way split borders panes on both sides, so both arrows grow it — shrink it
+> by growing a sibling instead.
 >
 > **Note (GNOME/Ubuntu):** `Ctrl+Alt+←/→/↑/↓` is reserved by the desktop for switching
 > workspaces, which is why focus uses `Ctrl+Shift+arrows` and resize uses
@@ -52,7 +54,7 @@ keymap_preset = "tmux"
 | `Ctrl+Alt+"` | Split vertical (stacked) |
 | `Ctrl+Alt+X` | Close pane |
 | `Ctrl+Shift+←/→/↑/↓` | Move focus |
-| `Alt+Shift+←/→/↑/↓` | Resize focused pane (→/↓ grow, ←/↑ shrink) |
+| `Alt+Shift+←/→/↑/↓` | Resize focused pane (border follows the arrow) |
 | `Ctrl+Alt+C` / `Ctrl+Alt+V` | Copy / Paste |
 | `Ctrl+Alt+K` / `Ctrl+Alt+J` | Scroll line up / down |
 | `Ctrl+Alt+PageUp` / `Ctrl+Alt+PageDown` | Scroll page up / down |
