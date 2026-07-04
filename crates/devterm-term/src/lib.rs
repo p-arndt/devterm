@@ -15,9 +15,11 @@ use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Colors;
-use alacritty_terminal::term::{Config, Term as ATerm};
+use alacritty_terminal::term::{Config, Term as ATerm, TermMode};
 use alacritty_terminal::vte::ansi::{
     Color as AnsiColor, CursorShape as AnsiCursorShape, NamedColor, Processor, Rgb as AnsiRgb,
 };
@@ -108,6 +110,55 @@ pub struct Snapshot {
     /// Rows scrolled up from the bottom (0 = live).
     pub scrollback_offset: usize,
     pub title: Option<String>,
+}
+
+/// Theme override for the palette-backed default colours.
+///
+/// Consulted whenever the live emulator palette has no entry for a slot (i.e. the child
+/// never set it via OSC). OSC-set colours always win over this. [`Palette::default`]
+/// reproduces the built-in xterm palette, so an unset theme changes nothing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Palette {
+    /// The 16 ANSI colours (indices 0..=15).
+    pub ansi: [Rgb; 16],
+    /// Default foreground (named `Foreground` slot, index 256).
+    pub foreground: Rgb,
+    /// Default background (named `Background` slot, index 257).
+    pub background: Rgb,
+    /// Cursor colour (named `Cursor` slot, index 258).
+    pub cursor: Rgb,
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        Self {
+            ansi: ANSI_16,
+            foreground: DEFAULT_FG,
+            background: DEFAULT_BG,
+            cursor: DEFAULT_FG,
+        }
+    }
+}
+
+/// How a selection extends from its anchor. Maps onto alacritty `SelectionType`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionMode {
+    /// Character-by-character selection.
+    Simple,
+    /// Word-granularity selection.
+    Semantic,
+    /// Whole-line selection.
+    Lines,
+}
+
+impl SelectionMode {
+    fn to_alacritty(self) -> SelectionType {
+        match self {
+            SelectionMode::Simple => SelectionType::Simple,
+            SelectionMode::Semantic => SelectionType::Semantic,
+            SelectionMode::Lines => SelectionType::Lines,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +308,8 @@ pub struct Term {
     parser: Processor,
     state: Arc<Mutex<SharedState>>,
     scrollback_lines: usize,
+    /// Theme override for palette-backed default colours (see [`Palette`]).
+    palette: Palette,
     /// Set by `advance`/`resize`/`scroll_display`, cleared by `snapshot`.
     dirty: StdCell<bool>,
 }
@@ -281,6 +334,7 @@ impl Term {
             parser: Processor::new(),
             state,
             scrollback_lines,
+            palette: Palette::default(),
             dirty: StdCell::new(true),
         }
     }
@@ -308,9 +362,17 @@ impl Term {
 
         // Resolve the palette-backed default colours once.
         let colors = content.colors;
-        let default_fg = resolve_indexed(colors, NamedColor::Foreground as usize);
-        let default_bg = resolve_indexed(colors, NamedColor::Background as usize);
-        let cursor_color = resolve_indexed(colors, NamedColor::Cursor as usize);
+        let palette = &self.palette;
+        let default_fg = resolve_indexed(colors, palette, NamedColor::Foreground as usize);
+        let default_bg = resolve_indexed(colors, palette, NamedColor::Background as usize);
+        let cursor_color = resolve_indexed(colors, palette, NamedColor::Cursor as usize);
+
+        // Active selection range in grid coordinates (same space as `indexed.point`).
+        let selection_range = self
+            .term
+            .selection
+            .as_ref()
+            .and_then(|s| s.to_range(&self.term));
 
         let mut cells = Vec::new();
 
@@ -338,15 +400,20 @@ impl Term {
             let bold = flags.contains(Flags::BOLD);
             let fg_color = if bold { brighten(cell.fg) } else { cell.fg };
 
-            let mut fg = resolve_color(colors, fg_color);
-            let mut bg = resolve_color(colors, cell.bg);
+            let mut fg = resolve_color(colors, palette, fg_color);
+            let mut bg = resolve_color(colors, palette, cell.bg);
 
             if flags.contains(Flags::DIM) {
                 fg = fg.dimmed();
             }
 
-            // Inverse swaps foreground and background.
-            if flags.contains(Flags::INVERSE) {
+            // Membership in the active selection (grid coordinates).
+            let selected = selection_range.is_some_and(|r| r.contains(indexed.point));
+
+            // Inverse video swaps fg/bg. Selection also inverts, so the two compose as a
+            // real XOR: a selected inverse cell renders non-inverse.
+            let invert = flags.contains(Flags::INVERSE) ^ selected;
+            if invert {
                 std::mem::swap(&mut fg, &mut bg);
             }
 
@@ -361,9 +428,10 @@ impl Term {
             let strikeout = flags.contains(Flags::STRIKEOUT);
 
             // Only emit non-blank cells: anything with visible glyph, a non-default
-            // background, or a line decoration.
+            // background, or a line decoration. Selected cells are always emitted so a
+            // selection over empty space is visible.
             let is_blank = c == ' ' && bg == default_bg && !underline && !strikeout;
-            if is_blank {
+            if is_blank && !selected {
                 continue;
             }
 
@@ -427,26 +495,98 @@ impl Term {
     pub fn dirty(&self) -> bool {
         self.dirty.get()
     }
+
+    /// Install a theme override for the palette-backed default colours. Takes effect on
+    /// the next [`snapshot`](Term::snapshot); marks the term dirty.
+    pub fn set_palette(&mut self, palette: Palette) {
+        self.palette = palette;
+        self.dirty.set(true);
+    }
+
+    /// Convert a viewport coordinate (line 0 = top visible row) to an alacritty grid
+    /// `Point`, accounting for the current scrollback display offset.
+    fn viewport_point(&self, col: u16, line: u16) -> Point {
+        let display_offset = self.term.grid().display_offset() as i32;
+        Point::new(Line(line as i32 - display_offset), Column(col as usize))
+    }
+
+    /// Begin a selection anchored at viewport `(col, line)`. Replaces any existing
+    /// selection; marks the term dirty.
+    pub fn start_selection(&mut self, col: u16, line: u16, mode: SelectionMode) {
+        let point = self.viewport_point(col, line);
+        self.term.selection = Some(Selection::new(mode.to_alacritty(), point, Side::Left));
+        self.dirty.set(true);
+    }
+
+    /// Extend the active selection to viewport `(col, line)`. No-op if no selection is
+    /// active; marks the term dirty.
+    pub fn update_selection(&mut self, col: u16, line: u16) {
+        let point = self.viewport_point(col, line);
+        if let Some(selection) = self.term.selection.as_mut() {
+            selection.update(point, Side::Right);
+            self.dirty.set(true);
+        }
+    }
+
+    /// Drop the active selection; marks the term dirty.
+    pub fn clear_selection(&mut self) {
+        self.term.selection = None;
+        self.dirty.set(true);
+    }
+
+    /// The currently selected text, or `None` if there is no selection or it is empty.
+    pub fn selected_text(&self) -> Option<String> {
+        self.term.selection_to_string().filter(|s| !s.is_empty())
+    }
+
+    /// Whether the child enabled bracketed paste mode (DECSET 2004). The app wraps pasted
+    /// text in the CSI 200~/201~ markers when this is true.
+    pub fn bracketed_paste(&self) -> bool {
+        self.term.mode().contains(TermMode::BRACKETED_PASTE)
+    }
+
+    /// Whether a synchronized update (DECSET 2026) is currently in progress. The app may
+    /// defer painting until it ends to avoid flicker.
+    ///
+    /// Delegates to the underlying vte `Processor`, which already buffers synchronized
+    /// output and tracks the begin/end sequences internally — so no hand-rolled parser is
+    /// needed.
+    pub fn in_synchronized_update(&self) -> bool {
+        self.parser.sync_timeout().sync_timeout().is_some()
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Colour resolution helpers.
 // ---------------------------------------------------------------------------
 
-/// Look up an index in the live palette, falling back to the built-in default palette.
-fn resolve_indexed(colors: &Colors, index: usize) -> Rgb {
+/// Look up an index in the live palette. If the child never set it via OSC, fall back to
+/// the theme `override_palette` for the slots it owns (ANSI 0-15, fg/bg/cursor), and to
+/// the built-in xterm default for everything else (cube + gray ramp).
+fn resolve_indexed(colors: &Colors, override_palette: &Palette, index: usize) -> Rgb {
     match colors[index] {
         Some(rgb) => rgb.into(),
-        None => builtin_palette(index),
+        None => palette_fallback(override_palette, index),
+    }
+}
+
+/// Theme-aware fallback for a palette index the live emulator has not set.
+fn palette_fallback(palette: &Palette, index: usize) -> Rgb {
+    match index {
+        0..=15 => palette.ansi[index],
+        256 => palette.foreground,
+        257 => palette.background,
+        258 => palette.cursor,
+        other => builtin_palette(other),
     }
 }
 
 /// Resolve any `Color` to a concrete RGB value.
-fn resolve_color(colors: &Colors, color: AnsiColor) -> Rgb {
+fn resolve_color(colors: &Colors, override_palette: &Palette, color: AnsiColor) -> Rgb {
     match color {
         AnsiColor::Spec(rgb) => rgb.into(),
-        AnsiColor::Named(named) => resolve_indexed(colors, named as usize),
-        AnsiColor::Indexed(i) => resolve_indexed(colors, i as usize),
+        AnsiColor::Named(named) => resolve_indexed(colors, override_palette, named as usize),
+        AnsiColor::Indexed(i) => resolve_indexed(colors, override_palette, i as usize),
     }
 }
 
@@ -555,5 +695,114 @@ mod tests {
         // After inverse, fg becomes the default background and bg the default fg.
         assert_eq!(z.fg, snap.default_bg);
         assert_eq!(z.bg, snap.default_fg);
+    }
+
+    #[test]
+    fn selection_inverts_cells_and_yields_text() {
+        let mut term = Term::new(20, 5, 100);
+        term.advance(b"hi");
+        term.start_selection(0, 0, SelectionMode::Simple);
+        term.update_selection(1, 0);
+        assert!(term.dirty());
+
+        let snap = term.snapshot();
+        let h = cell_at(&snap, 0, 0).expect("selected 'h'");
+        let i = cell_at(&snap, 0, 1).expect("selected 'i'");
+        // Selected cells render inverse: fg/bg swapped vs the defaults.
+        assert_eq!(h.fg, snap.default_bg);
+        assert_eq!(h.bg, snap.default_fg);
+        assert_eq!(i.fg, snap.default_bg);
+        assert_eq!(i.bg, snap.default_fg);
+
+        assert_eq!(term.selected_text().as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn selection_and_inverse_cancel_out() {
+        let mut term = Term::new(20, 5, 100);
+        // SGR 7 = inverse, print 'Z'.
+        term.advance(b"\x1b[7mZ");
+        term.start_selection(0, 0, SelectionMode::Simple);
+        term.update_selection(0, 0);
+        let snap = term.snapshot();
+        let z = cell_at(&snap, 0, 0).expect("cell 'Z'");
+        // Inverse XOR selection => back to normal orientation.
+        assert_eq!(z.fg, snap.default_fg);
+        assert_eq!(z.bg, snap.default_bg);
+    }
+
+    #[test]
+    fn clear_selection_removes_highlight() {
+        let mut term = Term::new(20, 5, 100);
+        term.advance(b"hi");
+        term.start_selection(0, 0, SelectionMode::Simple);
+        term.update_selection(1, 0);
+        let _ = term.snapshot();
+
+        term.clear_selection();
+        assert!(term.selected_text().is_none());
+
+        let snap = term.snapshot();
+        let h = cell_at(&snap, 0, 0).expect("cell 'h'");
+        // Back to normal foreground on default background.
+        assert_eq!(h.fg, snap.default_fg);
+        assert_eq!(h.bg, snap.default_bg);
+    }
+
+    #[test]
+    fn set_palette_changes_default_foreground() {
+        let mut term = Term::new(20, 5, 100);
+        term.advance(b"h");
+
+        let palette = Palette {
+            foreground: Rgb::new(0x11, 0x22, 0x33),
+            ..Palette::default()
+        };
+        term.set_palette(palette);
+        assert!(term.dirty());
+
+        let snap = term.snapshot();
+        assert_eq!(snap.default_fg, Rgb::new(0x11, 0x22, 0x33));
+        let h = cell_at(&snap, 0, 0).expect("cell 'h'");
+        assert_eq!(h.fg, Rgb::new(0x11, 0x22, 0x33));
+    }
+
+    #[test]
+    fn set_palette_overrides_ansi_color() {
+        let mut term = Term::new(20, 5, 100);
+        // SGR 31 = ANSI red (index 1).
+        term.advance(b"\x1b[31mX");
+
+        let mut palette = Palette::default();
+        palette.ansi[1] = Rgb::new(0xab, 0xcd, 0xef);
+        term.set_palette(palette);
+
+        let snap = term.snapshot();
+        let x = cell_at(&snap, 0, 0).expect("cell 'X'");
+        assert_eq!(x.fg, Rgb::new(0xab, 0xcd, 0xef));
+    }
+
+    #[test]
+    fn bracketed_paste_flips_after_enable() {
+        let mut term = Term::new(20, 5, 100);
+        assert!(!term.bracketed_paste());
+        // DECSET 2004 = enable bracketed paste.
+        term.advance(b"\x1b[?2004h");
+        assert!(term.bracketed_paste());
+        // DECRST 2004 = disable.
+        term.advance(b"\x1b[?2004l");
+        assert!(!term.bracketed_paste());
+    }
+
+    #[test]
+    fn synchronized_update_tracks_2026() {
+        let mut term = Term::new(20, 5, 100);
+        assert!(!term.in_synchronized_update());
+        // DECSET 2026 = begin synchronized update.
+        term.advance(b"\x1b[?2026h");
+        assert!(term.in_synchronized_update());
+        // DECRST 2026 = end synchronized update.
+        term.advance(b"\x1b[?2026l");
+        assert!(!term.in_synchronized_update());
     }
 }

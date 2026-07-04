@@ -105,15 +105,32 @@ fn linear_rgba(rgb: Rgb, alpha: f32) -> [f32; 4] {
 }
 
 // ---------------------------------------------------------------------------
+// Font faces.
+// ---------------------------------------------------------------------------
+
+/// One font face in the fallback chain: raw file bytes plus the face index within
+/// that file (a collection like a `.ttc` holds several faces). The primary face
+/// (index 0 of the chain) drives the monospace grid metrics; the rest only supply
+/// glyphs the primary is missing.
+struct FontFace {
+    data: Vec<u8>,
+    index: u32,
+}
+
+// ---------------------------------------------------------------------------
 // Glyph atlas.
 // ---------------------------------------------------------------------------
 
-/// Atlas key: a character in one of the four bold/italic styling combinations.
+/// Atlas key: a character in one of the four bold/italic styling combinations,
+/// tagged with the index (into the font-fallback chain) of the face that owns it.
+/// The face is part of the key so the same codepoint drawn from two different
+/// faces never collides in the cache.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct GlyphKey {
     c: char,
     bold: bool,
     italic: bool,
+    face: usize,
 }
 
 /// Placement + UV of a rasterized glyph inside the atlas (all in physical px / [0,1] uv).
@@ -138,6 +155,10 @@ struct Atlas {
     shelf_y: u32,
     shelf_height: u32,
     glyphs: HashMap<GlyphKey, GlyphInfo>,
+    /// Resolved fallback-chain index for each character seen so far. Face selection
+    /// depends only on the codepoint (bold/italic are synthetic), so this is keyed on
+    /// `char` and keeps face lookup O(1) after the first sighting.
+    face_of: HashMap<char, usize>,
     scale_ctx: ScaleContext,
 }
 
@@ -168,6 +189,7 @@ impl Atlas {
             shelf_y: 0,
             shelf_height: 0,
             glyphs: HashMap::new(),
+            face_of: HashMap::new(),
             scale_ctx: ScaleContext::new(),
         }
     }
@@ -181,42 +203,69 @@ impl Atlas {
         self.glyphs.clear();
     }
 
-    /// Return the atlas entry for `key`, rasterizing and packing it on first use.
+    /// Resolve which face in `faces` should render `c`, caching the result.
+    ///
+    /// Picks the first face whose charmap maps `c` to a non-zero glyph id; if no face
+    /// maps it, falls back to the primary (index 0), which renders `notdef` — the same
+    /// tofu box as before the fallback chain existed.
+    fn resolve_face(&mut self, faces: &[FontFace], c: char) -> usize {
+        if let Some(&face) = self.face_of.get(&c) {
+            return face;
+        }
+        let face = select_face(faces, c);
+        self.face_of.insert(c, face);
+        face
+    }
+
+    /// Return the atlas entry for `(c, bold, italic)`, resolving the fallback face,
+    /// then rasterizing and packing on first use.
     fn glyph(
         &mut self,
         queue: &wgpu::Queue,
-        font_data: &[u8],
-        font_index: u32,
+        faces: &[FontFace],
         px: f32,
-        key: GlyphKey,
+        c: char,
+        bold: bool,
+        italic: bool,
     ) -> GlyphInfo {
+        let face = self.resolve_face(faces, c);
+        let key = GlyphKey {
+            c,
+            bold,
+            italic,
+            face,
+        };
         if let Some(info) = self.glyphs.get(&key) {
             return *info;
         }
-        let info = self
-            .rasterize(queue, font_data, font_index, px, key)
-            .unwrap_or(GlyphInfo {
-                uv_min: [0.0, 0.0],
-                uv_max: [0.0, 0.0],
-                left: 0.0,
-                top: 0.0,
-                width: 0.0,
-                height: 0.0,
-            });
+        let info = self.rasterize(queue, faces, px, key).unwrap_or(GlyphInfo {
+            uv_min: [0.0, 0.0],
+            uv_max: [0.0, 0.0],
+            left: 0.0,
+            top: 0.0,
+            width: 0.0,
+            height: 0.0,
+        });
         self.glyphs.insert(key, info);
         info
     }
 
     /// Rasterize a glyph with swash and upload it into a free atlas shelf slot.
+    ///
+    /// The glyph is taken from the resolved fallback face (`key.face`). Coverage is
+    /// rasterized from the outline source, matching the primary face, so CJK, box-drawing
+    /// and Nerd-Font symbols render sharp. Color-bitmap emoji faces (COLR/CBDT) only
+    /// contribute their monochrome outline here — the atlas is `R8Unorm` coverage, so
+    /// full color emoji needs an RGBA atlas and is deferred to M4.
     fn rasterize(
         &mut self,
         queue: &wgpu::Queue,
-        font_data: &[u8],
-        font_index: u32,
+        faces: &[FontFace],
         px: f32,
         key: GlyphKey,
     ) -> Option<GlyphInfo> {
-        let font = FontRef::from_index(font_data, font_index as usize)?;
+        let face = faces.get(key.face)?;
+        let font = FontRef::from_index(&face.data, face.index as usize)?;
         let glyph_id = font.charmap().map(key.c);
         if glyph_id == 0 {
             return None; // no glyph for this codepoint in the font
@@ -381,9 +430,9 @@ pub struct Renderer {
 
     atlas: Atlas,
 
-    // Font state.
-    font_data: Vec<u8>,
-    font_index: u32,
+    // Font state: `faces[0]` is the primary monospace face (drives metrics); the rest
+    // are the fallback chain used only when the primary lacks a codepoint.
+    faces: Vec<FontFace>,
     base_font_px: f32,
     scale_factor: f64,
 
@@ -470,8 +519,8 @@ impl Renderer {
         };
         surface.configure(&device, &config);
 
-        // --- font ---
-        let (font_data, font_index) = load_monospace_font()
+        // --- font: primary monospace face plus whatever fallback faces resolve ---
+        let faces = load_font_faces()
             .context("no monospace font found via fontdb (Cascadia/Consolas/JetBrains/any)")?;
 
         // --- viewport uniform + bind group (group 0) ---
@@ -663,8 +712,12 @@ impl Renderer {
         let glyph_instances = InstanceBuffer::new(&device, "devterm glyph instances");
 
         let scale_factor = window.scale_factor();
-        let (metrics, baseline) =
-            compute_metrics(&font_data, font_index, font_size_px * scale_factor as f32);
+        let primary = &faces[0];
+        let (metrics, baseline) = compute_metrics(
+            &primary.data,
+            primary.index,
+            font_size_px * scale_factor as f32,
+        );
 
         let renderer = Renderer {
             _window: window,
@@ -680,8 +733,7 @@ impl Renderer {
             bg_instances,
             glyph_instances,
             atlas,
-            font_data,
-            font_index,
+            faces,
             base_font_px: font_size_px,
             scale_factor,
             metrics,
@@ -710,7 +762,25 @@ impl Renderer {
             return;
         }
         self.scale_factor = scale;
-        let (metrics, baseline) = compute_metrics(&self.font_data, self.font_index, self.font_px());
+        let primary = &self.faces[0];
+        let (metrics, baseline) = compute_metrics(&primary.data, primary.index, self.font_px());
+        self.metrics = metrics;
+        self.baseline = baseline;
+        // Cached glyphs were rasterized at the old pixel size; drop them.
+        self.atlas.reset();
+    }
+
+    /// Change the base font size (physical px at scale 1.0), recompute cell metrics and
+    /// baseline, and drop cached glyphs so they re-rasterize at the new size. Callers must
+    /// re-derive each pane's cols/rows afterwards (cell size changed). No-op if unchanged.
+    pub fn set_font_size(&mut self, px: f32) {
+        let px = px.max(1.0);
+        if (px - self.base_font_px).abs() < f32::EPSILON {
+            return;
+        }
+        self.base_font_px = px;
+        let primary = &self.faces[0];
+        let (metrics, baseline) = compute_metrics(&primary.data, primary.index, self.font_px());
         self.metrics = metrics;
         self.baseline = baseline;
         // Cached glyphs were rasterized at the old pixel size; drop them.
@@ -747,6 +817,11 @@ impl Renderer {
         for pane in panes {
             self.build_pane(pane, surface_w, surface_h, &mut bg, &mut glyphs);
         }
+
+        // Pane separators + focus highlight, appended last so they blend over the
+        // per-pane content. The glyph pass runs after this, so text at the very edge
+        // still draws on top of the thin border and stays legible.
+        self.build_borders(panes, surface_w, surface_h, &mut bg);
 
         let bg_bytes = bytemuck::cast_slice(&bg);
         let glyph_bytes = bytemuck::cast_slice(&glyphs);
@@ -881,14 +956,9 @@ impl Renderer {
             if cell.c == ' ' || cell.c == '\0' {
                 continue;
             }
-            let key = GlyphKey {
-                c: cell.c,
-                bold: cell.bold,
-                italic: cell.italic,
-            };
-            let info = self
-                .atlas
-                .glyph(&self.queue, &self.font_data, self.font_index, px, key);
+            let info =
+                self.atlas
+                    .glyph(&self.queue, &self.faces, px, cell.c, cell.bold, cell.italic);
             if info.width <= 0.0 || info.height <= 0.0 {
                 continue;
             }
@@ -911,17 +981,96 @@ impl Renderer {
             });
         }
     }
+
+    /// Physical-pixel border thickness, derived from the DPI scale (1px at scale 1,
+    /// 2px at scale 2, …). Focused panes double this for a clearer highlight.
+    fn border_thickness(&self) -> f32 {
+        (self.scale_factor.round() as f32).max(1.0)
+    }
+
+    /// Draw thin pane separators and a focus highlight into the background instances.
+    ///
+    /// A focused pane gets an accent frame; unfocused panes get a dim separator. A lone
+    /// full-window pane is only outlined (subtly) when focused, so a single-pane layout
+    /// stays clean.
+    fn build_borders(
+        &self,
+        panes: &[PaneView],
+        surface_w: f32,
+        surface_h: f32,
+        bg: &mut Vec<BgInstance>,
+    ) {
+        let t = self.border_thickness();
+        let single = panes.len() == 1;
+        for pane in panes {
+            let x = pane.area.x * surface_w;
+            let y = pane.area.y * surface_h;
+            let w = pane.area.w * surface_w;
+            let h = pane.area.h * surface_h;
+            let (color, thickness) = if pane.focused {
+                // Subtle 1px accent for a lone pane; a heavier 2px accent when split.
+                (BORDER_ACCENT, if single { t } else { t * 2.0 })
+            } else if single {
+                continue; // no border on an unfocused single pane
+            } else {
+                (BORDER_DIM, t)
+            };
+            push_frame(bg, x, y, w, h, thickness, color);
+        }
+    }
+}
+
+/// Accent color of the focused pane's border.
+const BORDER_ACCENT: Rgb = Rgb {
+    r: 0x4d,
+    g: 0x9a,
+    b: 0xff,
+};
+
+/// Dim color of separators between unfocused panes.
+const BORDER_DIM: Rgb = Rgb {
+    r: 0x3a,
+    g: 0x3a,
+    b: 0x3a,
+};
+
+/// Push four thin quads outlining the `w x h` rect at `(x, y)` with the given thickness.
+fn push_frame(bg: &mut Vec<BgInstance>, x: f32, y: f32, w: f32, h: f32, t: f32, color: Rgb) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let t = t.min(w).min(h);
+    let c = linear_rgba(color, 1.0);
+    // top, bottom, left, right
+    bg.push(BgInstance {
+        pos: [x, y],
+        size: [w, t],
+        color: c,
+    });
+    bg.push(BgInstance {
+        pos: [x, y + h - t],
+        size: [w, t],
+        color: c,
+    });
+    bg.push(BgInstance {
+        pos: [x, y],
+        size: [t, h],
+        color: c,
+    });
+    bg.push(BgInstance {
+        pos: [x + w - t, y],
+        size: [t, h],
+        color: c,
+    });
 }
 
 // ---------------------------------------------------------------------------
 // Font loading + metrics.
 // ---------------------------------------------------------------------------
 
-/// Load a monospace font's raw data + face index, trying a preferred chain first.
-fn load_monospace_font() -> Option<(Vec<u8>, u32)> {
-    let mut db = fontdb::Database::new();
-    db.load_system_fonts();
-
+/// Resolve the id of the primary monospace face from a loaded database, trying a
+/// preferred chain first and finally any face the system flags as monospaced.
+fn resolve_primary(db: &fontdb::Database) -> Option<fontdb::ID> {
     let candidates = [
         // Windows / bundled developer fonts.
         fontdb::Family::Name("Cascadia Mono"),
@@ -945,18 +1094,108 @@ fn load_monospace_font() -> Option<(Vec<u8>, u32)> {
             families: &[family],
             ..Default::default()
         };
-        if let Some(id) = db.query(&query)
-            && let Some(data) = db.with_face_data(id, |data, index| (data.to_vec(), index))
-        {
-            return Some(data);
+        if let Some(id) = db.query(&query) {
+            return Some(id);
         }
     }
 
     // Last resort: any installed face the system flags as monospaced. This keeps
     // startup working when none of the named families exist and the generic
     // `Monospace` alias points at an absent font.
-    let id = db.faces().find(|face| face.monospaced).map(|face| face.id)?;
+    db.faces().find(|face| face.monospaced).map(|face| face.id)
+}
+
+/// Copy one face's raw bytes + index out of the database.
+fn load_face(db: &fontdb::Database, id: fontdb::ID) -> Option<FontFace> {
+    db.with_face_data(id, |data, index| FontFace {
+        data: data.to_vec(),
+        index,
+    })
+}
+
+/// Load a monospace font's raw data + face index, trying a preferred chain first.
+///
+/// Retained as the single-face entry point (used by tests); [`load_font_faces`] builds
+/// the full primary-plus-fallback chain the renderer actually uses.
+#[cfg(test)]
+fn load_monospace_font() -> Option<(Vec<u8>, u32)> {
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts();
+    let id = resolve_primary(&db)?;
     db.with_face_data(id, |data, index| (data.to_vec(), index))
+}
+
+/// Build the font-fallback chain: the primary monospace face followed by whichever
+/// symbol/Nerd, CJK and emoji families `fontdb` can resolve on this system.
+///
+/// Glyphs missing from the primary (CJK, Nerd-Font symbols, box-drawing, emoji) are
+/// drawn from a later face instead of showing a tofu box. Metrics still come from the
+/// primary only, so the monospace grid stays uniform. Uninstalled fallbacks are skipped;
+/// with none present the chain is just the primary.
+fn load_font_faces() -> Option<Vec<FontFace>> {
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts();
+
+    let primary_id = resolve_primary(&db)?;
+    let mut faces = vec![load_face(&db, primary_id)?];
+
+    // One preferred family list per fallback category; the first that resolves wins.
+    let fallback_groups: [&[&str]; 3] = [
+        // Symbols / Nerd Font (powerline, box-drawing, dev icons).
+        &[
+            "Symbols Nerd Font Mono",
+            "Symbols Nerd Font",
+            "Noto Sans Symbols 2",
+        ],
+        // CJK.
+        &[
+            "Noto Sans CJK SC",
+            "Noto Sans CJK JP",
+            "Microsoft YaHei",
+            "MS Gothic",
+            "Source Han Sans SC",
+            "Source Han Sans",
+        ],
+        // Emoji (renders monochrome here; see `Atlas::rasterize`).
+        &["Noto Color Emoji", "Segoe UI Emoji", "Apple Color Emoji"],
+    ];
+
+    for group in fallback_groups {
+        for name in group {
+            let query = fontdb::Query {
+                families: &[fontdb::Family::Name(name)],
+                ..Default::default()
+            };
+            if let Some(id) = db.query(&query)
+                && id != primary_id
+                && let Some(face) = load_face(&db, id)
+            {
+                faces.push(face);
+                break;
+            }
+        }
+    }
+
+    Some(faces)
+}
+
+/// Index of the first face in `faces` whose charmap maps `c` to a non-zero glyph id.
+/// Returns 0 (the primary) when no face maps `c`, so the primary renders `notdef`.
+fn select_face(faces: &[FontFace], c: char) -> usize {
+    let maps: Vec<bool> = faces
+        .iter()
+        .map(|face| {
+            FontRef::from_index(&face.data, face.index as usize)
+                .is_some_and(|font| font.charmap().map(c) != 0)
+        })
+        .collect();
+    first_mapping_face(&maps)
+}
+
+/// Pure selection rule: the index of the first `true`, or 0 when all are `false`.
+/// Split out from [`select_face`] so it can be unit-tested without any font files.
+fn first_mapping_face(maps: &[bool]) -> usize {
+    maps.iter().position(|&m| m).unwrap_or(0)
 }
 
 /// Compute cell metrics and the top-to-baseline distance for a given pixel font size.
@@ -983,29 +1222,6 @@ fn compute_metrics(font_data: &[u8], font_index: u32, px: f32) -> (CellMetrics, 
     };
 
     (CellMetrics { width, height }, baseline)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The renderer aborts startup if no monospace font resolves, so font discovery
-    /// must succeed on any system that has at least one monospaced face installed.
-    /// This regressions the Linux case where only the generic/absent families matched.
-    #[test]
-    fn resolves_a_monospace_font() {
-        let mut db = fontdb::Database::new();
-        db.load_system_fonts();
-        let has_any_mono = db.faces().any(|face| face.monospaced);
-
-        match load_monospace_font() {
-            Some((data, _index)) => assert!(!data.is_empty(), "loaded font data was empty"),
-            None => assert!(
-                !has_any_mono,
-                "a monospaced face is installed but load_monospace_font() returned None",
-            ),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1082,3 +1298,73 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     return vec4<f32>(in.color.rgb, in.color.a * coverage);
 }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The renderer aborts startup if no monospace font resolves, so font discovery
+    /// must succeed on any system that has at least one monospaced face installed.
+    /// This regressions the Linux case where only the generic/absent families matched.
+    #[test]
+    fn resolves_a_monospace_font() {
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        let has_any_mono = db.faces().any(|face| face.monospaced);
+
+        match load_monospace_font() {
+            Some((data, _index)) => assert!(!data.is_empty(), "loaded font data was empty"),
+            None => assert!(
+                !has_any_mono,
+                "a monospaced face is installed but load_monospace_font() returned None",
+            ),
+        }
+    }
+
+    /// The fallback chain always starts with a non-empty primary face when any
+    /// monospaced font exists on the system.
+    #[test]
+    fn font_chain_has_primary_first() {
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        let has_any_mono = db.faces().any(|face| face.monospaced);
+
+        match load_font_faces() {
+            Some(faces) => {
+                assert!(!faces.is_empty(), "chain must contain at least the primary");
+                assert!(!faces[0].data.is_empty(), "primary face data was empty");
+            }
+            None => assert!(
+                !has_any_mono,
+                "a monospaced face is installed but load_font_faces() returned None",
+            ),
+        }
+    }
+
+    /// The pure selection rule: first mapping face wins, primary (0) when none map.
+    #[test]
+    fn first_mapping_face_rules() {
+        // Only the primary maps the char -> pick the primary.
+        assert_eq!(first_mapping_face(&[true, false, false]), 0);
+        // Primary lacks it but a later fallback maps it -> pick the fallback.
+        assert_eq!(first_mapping_face(&[false, true, false]), 1);
+        assert_eq!(first_mapping_face(&[false, false, true]), 2);
+        // The earliest mapping face wins when several map it.
+        assert_eq!(first_mapping_face(&[false, true, true]), 1);
+        // No face maps it -> fall back to the primary (renders notdef).
+        assert_eq!(first_mapping_face(&[false, false, false]), 0);
+        // Degenerate empty chain -> primary index 0.
+        assert_eq!(first_mapping_face(&[]), 0);
+    }
+
+    /// Against the real loaded chain, a plain ASCII letter must resolve to the primary
+    /// (every monospace face maps it), exercising `select_face` end to end.
+    #[test]
+    fn select_face_prefers_primary_for_ascii() {
+        let Some(faces) = load_font_faces() else {
+            return; // no fonts installed; nothing to assert
+        };
+        assert_eq!(select_face(&faces, 'A'), 0);
+        assert_eq!(select_face(&faces, 'x'), 0);
+    }
+}

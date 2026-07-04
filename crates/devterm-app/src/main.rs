@@ -1,7 +1,8 @@
 //! DevTerm application entry point.
 //!
-//! The M0 walking skeleton: a winit event loop hosting one full-window PowerShell pane,
-//! wiring ConPTY output through the terminal model into the wgpu renderer.
+//! A winit event loop hosting a multi-pane terminal: splits/focus/resize over a layout
+//! tree, config-driven keybindings/theme/shell, selection + clipboard, and hot-reload of
+//! `config.toml`. Wires PTY output through the terminal model into the wgpu renderer.
 
 mod app;
 mod keymap;
@@ -9,7 +10,7 @@ mod keymap;
 use anyhow::Result;
 use winit::event_loop::{ControlFlow, EventLoop};
 
-use app::{App, UserEvent};
+use app::{App, UserEvent, spawn_config_watcher};
 use devterm_config::Config;
 
 fn main() -> Result<()> {
@@ -28,6 +29,9 @@ fn main() -> Result<()> {
     event_loop.set_control_flow(ControlFlow::Wait);
 
     let proxy = event_loop.create_proxy();
+    // Hot-reload watcher: kept alive for the program's lifetime (dropping it stops watching).
+    let _config_watcher = spawn_config_watcher(proxy.clone());
+
     let mut app = App::new(config, proxy);
     event_loop.run_app(&mut app)?;
 
