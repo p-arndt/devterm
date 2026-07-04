@@ -16,9 +16,23 @@ pub(crate) struct FontFace {
     pub(crate) index: u32,
 }
 
-/// Resolve the id of the primary monospace face from a loaded database, trying a
-/// preferred chain first and finally any face the system flags as monospaced.
-fn resolve_primary(db: &fontdb::Database) -> Option<fontdb::ID> {
+/// Resolve the id of the primary monospace face from a loaded database.
+///
+/// A user-requested `preferred` family is queried first; if it is absent (or `fontdb`
+/// cannot resolve it) the search falls through to the hardcoded developer/monospace
+/// chain and finally to any face the system flags as monospaced.
+fn resolve_primary(db: &fontdb::Database, preferred: Option<&str>) -> Option<fontdb::ID> {
+    // Honour an explicit family preference before anything else.
+    if let Some(name) = preferred {
+        let query = fontdb::Query {
+            families: &[fontdb::Family::Name(name)],
+            ..Default::default()
+        };
+        if let Some(id) = db.query(&query) {
+            return Some(id);
+        }
+    }
+
     let candidates = [
         // Windows / bundled developer fonts.
         fontdb::Family::Name("Cascadia Mono"),
@@ -69,7 +83,7 @@ fn load_face(db: &fontdb::Database, id: fontdb::ID) -> Option<FontFace> {
 fn load_monospace_font() -> Option<(Vec<u8>, u32)> {
     let mut db = fontdb::Database::new();
     db.load_system_fonts();
-    let id = resolve_primary(&db)?;
+    let id = resolve_primary(&db, None)?;
     db.with_face_data(id, |data, index| (data.to_vec(), index))
 }
 
@@ -80,11 +94,14 @@ fn load_monospace_font() -> Option<(Vec<u8>, u32)> {
 /// drawn from a later face instead of showing a tofu box. Metrics still come from the
 /// primary only, so the monospace grid stays uniform. Uninstalled fallbacks are skipped;
 /// with none present the chain is just the primary.
-pub(crate) fn load_font_faces() -> Option<Vec<FontFace>> {
+///
+/// `preferred` is a user-requested primary family; when it resolves it becomes `faces[0]`,
+/// otherwise the hardcoded monospace chain supplies the primary (see [`resolve_primary`]).
+pub(crate) fn load_font_faces(preferred: Option<&str>) -> Option<Vec<FontFace>> {
     let mut db = fontdb::Database::new();
     db.load_system_fonts();
 
-    let primary_id = resolve_primary(&db)?;
+    let primary_id = resolve_primary(&db, preferred)?;
     let mut faces = vec![load_face(&db, primary_id)?];
 
     // One preferred family list per fallback category; the first that resolves wins.
@@ -146,19 +163,54 @@ fn first_mapping_face(maps: &[bool]) -> usize {
     maps.iter().position(|&m| m).unwrap_or(0)
 }
 
-/// Compute cell metrics and the top-to-baseline distance for a given pixel font size.
-pub(crate) fn compute_metrics(font_data: &[u8], font_index: u32, px: f32) -> (CellMetrics, f32) {
+/// Allowed range for the user-configurable line-height factor. Kept narrow so a bad
+/// config value cannot produce a degenerate (zero/huge) cell height.
+pub(crate) const LINE_HEIGHT_MIN: f32 = 0.8;
+pub(crate) const LINE_HEIGHT_MAX: f32 = 2.0;
+
+/// Clamp a requested line-height factor into the supported range.
+pub(crate) fn clamp_line_height(factor: f32) -> f32 {
+    if factor.is_finite() {
+        factor.clamp(LINE_HEIGHT_MIN, LINE_HEIGHT_MAX)
+    } else {
+        1.0
+    }
+}
+
+/// Derive the cell height and glyph baseline from a font's (already pixel-scaled) vertical
+/// metrics and a line-height factor.
+///
+/// The natural single-spaced height is `ascent + descent + leading`; scaling it by `factor`
+/// adds (or removes) leading which is split evenly above and below the glyph so it stays
+/// vertically centred in the taller/shorter cell. At `factor == 1.0` the baseline is exactly
+/// the single-spaced baseline, so the default matches the pre-line-height behaviour.
+fn line_metrics(ascent: f32, descent: f32, leading: f32, factor: f32) -> (f32, f32) {
+    let natural = (ascent + descent + leading).ceil().max(1.0);
+    let height = (natural * factor).ceil().max(1.0);
+    let extra = height - natural;
+    let baseline = ascent + leading * 0.5 + extra * 0.5;
+    (height, baseline)
+}
+
+/// Compute cell metrics and the top-to-baseline distance for a given pixel font size and
+/// line-height factor (`1.0` = single-spaced; see [`line_metrics`]).
+pub(crate) fn compute_metrics(
+    font_data: &[u8],
+    font_index: u32,
+    px: f32,
+    line_height: f32,
+) -> (CellMetrics, f32) {
+    let factor = clamp_line_height(line_height);
     let fallback = CellMetrics {
         width: (px * 0.6).ceil().max(1.0),
-        height: (px * 1.2).ceil().max(1.0),
+        height: (px * 1.2 * factor).ceil().max(1.0),
     };
     let Some(font) = FontRef::from_index(font_data, font_index as usize) else {
-        return (fallback, (px).ceil());
+        return (fallback, (px * factor).ceil());
     };
 
     let m = font.metrics(&[]).scale(px);
-    let height = (m.ascent + m.descent + m.leading).ceil().max(1.0);
-    let baseline = m.ascent + m.leading * 0.5;
+    let (height, baseline) = line_metrics(m.ascent, m.descent, m.leading, factor);
 
     // Advance width of a representative monospace glyph.
     let glyph_id = font.charmap().map('M');
@@ -202,7 +254,7 @@ mod tests {
         db.load_system_fonts();
         let has_any_mono = db.faces().any(|face| face.monospaced);
 
-        match load_font_faces() {
+        match load_font_faces(None) {
             Some(faces) => {
                 assert!(!faces.is_empty(), "chain must contain at least the primary");
                 assert!(!faces[0].data.is_empty(), "primary face data was empty");
@@ -234,10 +286,79 @@ mod tests {
     /// (every monospace face maps it), exercising `select_face` end to end.
     #[test]
     fn select_face_prefers_primary_for_ascii() {
-        let Some(faces) = load_font_faces() else {
+        let Some(faces) = load_font_faces(None) else {
             return; // no fonts installed; nothing to assert
         };
         assert_eq!(select_face(&faces, 'A'), 0);
         assert_eq!(select_face(&faces, 'x'), 0);
+    }
+
+    /// A requested family that exists on the system is chosen as the primary face over
+    /// the hardcoded chain. Uses whatever family the first installed face reports so the
+    /// test does not depend on a particular font being present.
+    #[test]
+    fn resolve_primary_prefers_requested_family() {
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        let Some(face) = db.faces().next() else {
+            return; // no fonts installed; nothing to assert
+        };
+        let Some((family, _)) = face.families.first().cloned() else {
+            return;
+        };
+
+        let id = resolve_primary(&db, Some(&family))
+            .expect("an installed family must resolve when requested");
+        let resolved = db.face(id).expect("resolved id must exist in the db");
+        assert!(
+            resolved.families.iter().any(|(name, _)| name == &family),
+            "requested family {family:?} was not honoured as the primary face",
+        );
+    }
+
+    /// An unknown requested family falls through to the normal monospace chain, matching
+    /// the `None` result on any system that has a monospaced face.
+    #[test]
+    fn resolve_primary_falls_back_on_unknown_family() {
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        let bogus = "This Family Definitely Does Not Exist 12345";
+        assert_eq!(
+            resolve_primary(&db, Some(bogus)),
+            resolve_primary(&db, None)
+        );
+    }
+
+    /// The line-height factor is clamped into the supported range and non-finite input
+    /// collapses to the single-spaced default.
+    #[test]
+    fn line_height_is_clamped() {
+        assert_eq!(clamp_line_height(1.0), 1.0);
+        assert_eq!(clamp_line_height(0.1), LINE_HEIGHT_MIN);
+        assert_eq!(clamp_line_height(9.0), LINE_HEIGHT_MAX);
+        assert_eq!(clamp_line_height(f32::NAN), 1.0);
+        assert_eq!(clamp_line_height(f32::INFINITY), 1.0);
+    }
+
+    /// At factor 1.0 the cell height/baseline match the single-spaced values; a larger
+    /// factor grows the cell height by that factor and re-centres the baseline by half the
+    /// extra leading, while a smaller factor shrinks it.
+    #[test]
+    fn line_metrics_scales_and_centres() {
+        // Representative pixel-scaled vertical metrics.
+        let (ascent, descent, leading) = (16.0_f32, 4.0_f32, 0.0_f32);
+        let natural = (ascent + descent + leading).ceil().max(1.0);
+
+        let (h1, b1) = line_metrics(ascent, descent, leading, 1.0);
+        assert_eq!(h1, natural);
+        assert_eq!(b1, ascent + leading * 0.5);
+
+        let (h2, b2) = line_metrics(ascent, descent, leading, 2.0);
+        assert_eq!(h2, (natural * 2.0).ceil());
+        // The glyph shifts down by half the added leading.
+        assert_eq!(b2, b1 + (h2 - natural) * 0.5);
+
+        let (h_small, _) = line_metrics(ascent, descent, leading, 0.8);
+        assert!(h_small < natural, "a factor below 1.0 must shrink the cell");
     }
 }

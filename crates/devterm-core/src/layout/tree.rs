@@ -29,6 +29,30 @@ impl core::fmt::Display for LayoutError {
 
 impl std::error::Error for LayoutError {}
 
+/// Opaque, stable handle for one interior split boundary within a tree.
+///
+/// It is the boundary's ordinal in the deterministic pre-order traversal used by
+/// [`LayoutTree::gutters`]: as long as the tree's shape is unchanged, the same id names the
+/// same boundary, so a drag that started on it keeps addressing it. Do not persist it across
+/// structural edits (split/close), which renumber boundaries.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct GutterId(pub(crate) u32);
+
+/// One interior split boundary — the draggable divider between two adjacent children of a
+/// split — as it falls within the area passed to [`LayoutTree::gutters`].
+#[derive(Clone, Copy, PartialEq, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Gutter {
+    /// Thin hit rectangle centred on the boundary, in the caller's coordinate space.
+    pub bounds: Rect,
+    /// The direction of the split this boundary belongs to. A [`SplitDirection::Horizontal`]
+    /// split has vertical dividers between its side-by-side children.
+    pub axis: SplitDirection,
+    /// Stable handle identifying this boundary this frame; pass to [`LayoutTree::drag_gutter`].
+    pub id: GutterId,
+}
+
 /// A tab's layout tree together with the currently focused pane.
 ///
 /// The tree is never empty: it starts with exactly one pane and always keeps >= 1 pane.
@@ -235,6 +259,30 @@ impl LayoutTree {
         self.resize(dir, factor);
     }
 
+    /// Every interior split boundary (divider) in the tree as it falls within `area`, for
+    /// mouse hit-testing and divider-drag resize. `area` is the same coordinate space as
+    /// [`compute`](Self::compute) (unit square or pixel rectangle). A single leaf yields none.
+    ///
+    /// Boundaries are numbered in a deterministic pre-order traversal, so each returned
+    /// [`Gutter::id`] round-trips to the same boundary via [`drag_gutter`](Self::drag_gutter)
+    /// while the tree's shape is unchanged.
+    pub fn gutters(&self, area: Rect) -> Vec<Gutter> {
+        let mut out = Vec::new();
+        let mut next = 0u32;
+        self.root.gutters_into(area, &mut next, &mut out);
+        out
+    }
+
+    /// Drags the boundary identified by `id`, moving it by `delta` as a signed fraction of the
+    /// parent split's length (e.g. `+0.05` shifts it 5% toward higher coordinates). Weight
+    /// moves from the shrinking child to the growing one, clamped so neither collapses below
+    /// the crate's minimum weight. Returns `true` if the boundary was found and moved, `false`
+    /// for an unknown `id` (a no-op).
+    pub fn drag_gutter(&mut self, id: GutterId, delta: f32) -> bool {
+        let mut next = 0u32;
+        self.root.drag_gutter(id, &mut next, delta)
+    }
+
     /// Checks the tree's structural invariants. Useful in tests and `debug_assert!`
     /// contexts.
     ///
@@ -365,10 +413,20 @@ mod tests {
         // so growing then shrinking by 1/factor must restore the original share.
         let mut t = LayoutTree::new(p(1));
         t.split(SplitDirection::Horizontal, p(2)); // 0.5 each
-        let width = |t: &LayoutTree| t.compute(Rect::UNIT).iter().find(|(id, _)| *id == p(2)).unwrap().1.w;
+        let width = |t: &LayoutTree| {
+            t.compute(Rect::UNIT)
+                .iter()
+                .find(|(id, _)| *id == p(2))
+                .unwrap()
+                .1
+                .w
+        };
         let before = width(&t);
         t.resize(Direction::Right, 1.1); // grow
-        assert!(width(&t) > before + 1e-4, "grow should widen the focused pane");
+        assert!(
+            width(&t) > before + 1e-4,
+            "grow should widen the focused pane"
+        );
         t.resize(Direction::Left, 1.0 / 1.1); // shrink (opposite arrow, same axis)
         assert!((width(&t) - before).abs() < 1e-6, "shrink undoes the grow");
         t.validate().unwrap();
@@ -380,17 +438,196 @@ mod tests {
         let mut t = LayoutTree::new(p(1));
         t.split(SplitDirection::Horizontal, p(2)); // focus -> p(2)
         let width = |t: &LayoutTree| {
-            t.compute(Rect::UNIT).iter().find(|(id, _)| *id == p(2)).unwrap().1.w
+            t.compute(Rect::UNIT)
+                .iter()
+                .find(|(id, _)| *id == p(2))
+                .unwrap()
+                .1
+                .w
         };
         let before = width(&t);
 
         // Left points at the neighbor (pane 1) -> the right pane grows leftward.
         t.resize_directional(Direction::Left, 1.1);
-        assert!(width(&t) > before + 1e-4, "Left grows the right pane toward its neighbor");
+        assert!(
+            width(&t) > before + 1e-4,
+            "Left grows the right pane toward its neighbor"
+        );
 
         // Right points at the window edge (no neighbor) -> shrink, undoing the grow.
         t.resize_directional(Direction::Right, 1.1);
-        assert!((width(&t) - before).abs() < 1e-6, "Right shrinks back — border tracks the key");
+        assert!(
+            (width(&t) - before).abs() < 1e-6,
+            "Right shrinks back — border tracks the key"
+        );
+        t.validate().unwrap();
+    }
+
+    fn width_of(t: &LayoutTree, id: PaneId) -> f32 {
+        t.compute(Rect::UNIT)
+            .iter()
+            .find(|(i, _)| *i == id)
+            .unwrap()
+            .1
+            .w
+    }
+
+    #[test]
+    fn single_leaf_has_no_gutters() {
+        let t = LayoutTree::new(p(1));
+        assert!(t.gutters(Rect::UNIT).is_empty());
+    }
+
+    #[test]
+    fn two_pane_horizontal_split_has_one_vertical_divider_on_the_border() {
+        let mut t = LayoutTree::new(p(1));
+        t.split(SplitDirection::Horizontal, p(2)); // [1 | 2], border at x = 0.5
+        let g = t.gutters(Rect::UNIT);
+        assert_eq!(g.len(), 1);
+        let g = g[0];
+        assert_eq!(
+            g.axis,
+            SplitDirection::Horizontal,
+            "a horizontal split has a vertical divider"
+        );
+        // The strip is centred on x = 0.5 and spans the full height.
+        let cx = g.bounds.x + g.bounds.w * 0.5;
+        assert!(
+            (cx - 0.5).abs() < 1e-6,
+            "centred on the shared border: {cx}"
+        );
+        assert!(g.bounds.w > 0.0, "hit-testable thickness");
+        assert!(
+            (g.bounds.y).abs() < 1e-6 && (g.bounds.h - 1.0).abs() < 1e-6,
+            "spans full height"
+        );
+    }
+
+    #[test]
+    fn gutter_bounds_track_the_pixel_area_passed_in() {
+        let mut t = LayoutTree::new(p(1));
+        t.split(SplitDirection::Vertical, p(2)); // stacked, horizontal divider at mid-height
+        let area = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let g = t.gutters(area);
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].axis, SplitDirection::Vertical);
+        let cy = g[0].bounds.y + g[0].bounds.h * 0.5;
+        assert!(
+            (cy - 300.0).abs() < 1e-3,
+            "centred at mid-height in pixels: {cy}"
+        );
+        assert!((g[0].bounds.w - 800.0).abs() < 1e-3, "spans full width");
+    }
+
+    #[test]
+    fn gutter_count_equals_interior_boundaries() {
+        // Flat 3-way horizontal split -> 2 boundaries.
+        let mut t = LayoutTree::new(p(1));
+        t.split(SplitDirection::Horizontal, p(2));
+        t.focus(p(1));
+        t.split(SplitDirection::Horizontal, p(3));
+        assert_eq!(t.gutters(Rect::UNIT).len(), 2);
+
+        // Nested: [1 | (2 / 3)] -> one outer + one inner boundary.
+        let mut t = LayoutTree::new(p(1));
+        t.split(SplitDirection::Horizontal, p(2)); // focus -> 2
+        t.split(SplitDirection::Vertical, p(3)); // 2 becomes a vertical stack
+        let g = t.gutters(Rect::UNIT);
+        assert_eq!(g.len(), 2);
+        assert_eq!(
+            g[0].axis,
+            SplitDirection::Horizontal,
+            "outer boundary numbered first"
+        );
+        assert_eq!(
+            g[1].axis,
+            SplitDirection::Vertical,
+            "then the nested boundary"
+        );
+    }
+
+    #[test]
+    fn drag_gutter_shifts_the_ratio_and_is_directional() {
+        let mut t = LayoutTree::new(p(1));
+        t.split(SplitDirection::Horizontal, p(2)); // [1 | 2], 0.5 each
+        let id = t.gutters(Rect::UNIT)[0].id;
+
+        let before = width_of(&t, p(1));
+        // Positive delta moves the border toward higher x -> the left pane (1) grows.
+        assert!(t.drag_gutter(id, 0.1));
+        let after = width_of(&t, p(1));
+        assert!(
+            after > before + 1e-4,
+            "left pane grows: {before} -> {after}"
+        );
+        assert!(
+            (width_of(&t, p(1)) + width_of(&t, p(2)) - 1.0).abs() < 1e-6,
+            "pair still tiles"
+        );
+        t.validate().unwrap();
+
+        // Negative delta moves it back and past centre -> the left pane shrinks.
+        assert!(t.drag_gutter(id, -0.3));
+        assert!(
+            width_of(&t, p(1)) < before - 1e-4,
+            "left pane shrinks below start"
+        );
+        t.validate().unwrap();
+    }
+
+    #[test]
+    fn drag_gutter_is_clamped_at_the_extremes() {
+        let mut t = LayoutTree::new(p(1));
+        t.split(SplitDirection::Horizontal, p(2));
+        let id = t.gutters(Rect::UNIT)[0].id;
+
+        // Push far past the edge in both directions: neither pane may collapse.
+        assert!(t.drag_gutter(id, 100.0));
+        assert!(width_of(&t, p(2)) > 0.0, "shrunk pane keeps positive width");
+        t.validate().unwrap();
+
+        assert!(t.drag_gutter(id, -100.0));
+        assert!(width_of(&t, p(1)) > 0.0, "other pane keeps positive width");
+        t.validate().unwrap();
+    }
+
+    #[test]
+    fn drag_unknown_gutter_is_a_noop() {
+        let mut t = LayoutTree::new(p(1));
+        t.split(SplitDirection::Horizontal, p(2));
+        let before = t.clone();
+        assert!(
+            !t.drag_gutter(GutterId(999), 0.2),
+            "unknown id returns false"
+        );
+        assert_eq!(t, before, "tree is unchanged");
+
+        // A single leaf has no boundary at all.
+        let mut leaf = LayoutTree::new(p(1));
+        assert!(!leaf.drag_gutter(GutterId(0), 0.2));
+    }
+
+    #[test]
+    fn drag_nested_gutter_addresses_the_inner_boundary() {
+        // [1 | (2 / 3)] — the second gutter is the divider between 2 and 3.
+        let mut t = LayoutTree::new(p(1));
+        t.split(SplitDirection::Horizontal, p(2));
+        t.split(SplitDirection::Vertical, p(3));
+        let inner = t.gutters(Rect::UNIT)[1].id;
+
+        let h2 = |t: &LayoutTree| {
+            t.compute(Rect::UNIT)
+                .iter()
+                .find(|(i, _)| *i == p(2))
+                .unwrap()
+                .1
+                .h
+        };
+        let before = h2(&t);
+        assert!(t.drag_gutter(inner, 0.1), "inner boundary found");
+        assert!(h2(&t) > before + 1e-4, "top pane of the nested stack grows");
+        // The outer split is untouched: pane 1 still owns its half.
+        assert!((width_of(&t, p(1)) - 0.5).abs() < 1e-6);
         t.validate().unwrap();
     }
 }

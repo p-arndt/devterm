@@ -27,7 +27,7 @@ mod node;
 mod tree;
 
 pub use node::{Child, LayoutNode};
-pub use tree::{LayoutError, LayoutTree};
+pub use tree::{Gutter, GutterId, LayoutError, LayoutTree};
 
 /// Arrangement direction of a split.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

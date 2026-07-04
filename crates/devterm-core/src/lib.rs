@@ -17,4 +17,6 @@ pub mod layout;
 
 pub use geometry::Rect;
 pub use id::{IdGen, PaneId, TabId};
-pub use layout::{Child, Direction, LayoutError, LayoutNode, LayoutTree, SplitDirection};
+pub use layout::{
+    Child, Direction, Gutter, GutterId, LayoutError, LayoutNode, LayoutTree, SplitDirection,
+};

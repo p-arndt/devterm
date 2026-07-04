@@ -90,7 +90,7 @@ impl Renderer {
         surface.configure(&device, &config);
 
         // --- font: primary monospace face plus whatever fallback faces resolve ---
-        let faces = load_font_faces()
+        let faces = load_font_faces(None)
             .context("no monospace font found via fontdb (Cascadia/Consolas/JetBrains/any)")?;
 
         // --- viewport uniform + bind group (group 0) ---
@@ -282,11 +282,13 @@ impl Renderer {
         let glyph_instances = InstanceBuffer::new(&device, "devterm glyph instances");
 
         let scale_factor = window.scale_factor();
+        let line_height = 1.0;
         let primary = &faces[0];
         let (metrics, baseline) = compute_metrics(
             &primary.data,
             primary.index,
             font_size_px * scale_factor as f32,
+            line_height,
         );
 
         let renderer = Renderer {
@@ -304,8 +306,10 @@ impl Renderer {
             glyph_instances,
             atlas,
             faces,
+            font_family: None,
             base_font_px: font_size_px,
             scale_factor,
+            line_height,
             metrics,
             baseline,
         };
@@ -326,18 +330,29 @@ impl Renderer {
         self.write_viewport();
     }
 
+    /// Recompute cell metrics + baseline from the primary face at the current pixel size
+    /// and line-height factor, then drop cached glyphs (they were rasterized against the
+    /// old primary/pixel size). Shared by every state transition that invalidates metrics.
+    fn recompute_metrics(&mut self) {
+        let primary = &self.faces[0];
+        let (metrics, baseline) = compute_metrics(
+            &primary.data,
+            primary.index,
+            self.font_px(),
+            self.line_height,
+        );
+        self.metrics = metrics;
+        self.baseline = baseline;
+        self.atlas.reset();
+    }
+
     /// DPI scale change; rebuild glyph metrics/atlas as needed.
     pub fn set_scale_factor(&mut self, scale: f64) {
         if (scale - self.scale_factor).abs() < f64::EPSILON {
             return;
         }
         self.scale_factor = scale;
-        let primary = &self.faces[0];
-        let (metrics, baseline) = compute_metrics(&primary.data, primary.index, self.font_px());
-        self.metrics = metrics;
-        self.baseline = baseline;
-        // Cached glyphs were rasterized at the old pixel size; drop them.
-        self.atlas.reset();
+        self.recompute_metrics();
     }
 
     /// Change the base font size (physical px at scale 1.0), recompute cell metrics and
@@ -349,12 +364,40 @@ impl Renderer {
             return;
         }
         self.base_font_px = px;
-        let primary = &self.faces[0];
-        let (metrics, baseline) = compute_metrics(&primary.data, primary.index, self.font_px());
-        self.metrics = metrics;
-        self.baseline = baseline;
-        // Cached glyphs were rasterized at the old pixel size; drop them.
-        self.atlas.reset();
+        self.recompute_metrics();
+    }
+
+    /// Set the preferred primary font family, rebuilding the face chain so the named family
+    /// leads it. `Some(name)` queries `fontdb` for that family first (see
+    /// [`load_font_faces`]); it falls back to the hardcoded monospace chain when the family
+    /// is missing or unusable. `None` restores the default chain. Metrics come from the
+    /// resolved primary and the glyph atlas is reset so stale glyphs are not sampled.
+    /// No-op if the request equals the current preference. Callers must re-derive each
+    /// pane's cols/rows afterwards (cell size may have changed).
+    pub fn set_font_family(&mut self, family: Option<String>) {
+        if family == self.font_family {
+            return;
+        }
+        // Only swap in the new chain if it actually loads; otherwise keep the current one.
+        if let Some(faces) = load_font_faces(family.as_deref()) {
+            self.faces = faces;
+            self.font_family = family;
+            self.recompute_metrics();
+        }
+    }
+
+    /// Set the line-height factor: the cell height becomes the font's single-spaced height
+    /// times `factor` (clamped to a sane range; see [`compute_metrics`]). Recomputes cell
+    /// metrics + baseline so glyphs stay centred and resets the atlas. `1.0` is the default.
+    /// No-op if the clamped factor is unchanged. Callers must re-derive each pane's
+    /// cols/rows afterwards (cell height changed).
+    pub fn set_line_height(&mut self, factor: f32) {
+        let factor = crate::font::clamp_line_height(factor);
+        if (factor - self.line_height).abs() < f32::EPSILON {
+            return;
+        }
+        self.line_height = factor;
+        self.recompute_metrics();
     }
 
     pub fn cell_metrics(&self) -> CellMetrics {

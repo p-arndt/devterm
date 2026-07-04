@@ -39,8 +39,10 @@ axis are exact inverses.
 
 Resize adjusts the nearest split along the pressed axis; a pane with no split on that axis
 doesn't move. (The middle pane of a flat three-way split has a neighbor on both sides, so
-both arrows grow it — shrink it by growing one of its siblings instead.) Dragging split
-dividers with the mouse isn't implemented yet.
+both arrows grow it — shrink it by growing one of its siblings instead.)
+
+You can also **drag a split border with the mouse**: hover a divider (the cursor turns
+into a resize arrow) and drag to move it.
 
 ## Scrollback
 
@@ -83,8 +85,10 @@ Everything below is live-reloaded — edit your `config.toml`
 ([where is it?](configuration.md#where-the-config-lives)), save, and the running window
 updates:
 
-- **Colors:** the `[theme]` table (16 ANSI colors + fg/bg/cursor as `#rrggbb`).
-- **Font size:** `font_size`.
+- **Colors:** `theme_name` (`default` / `gruvbox-dark`) and/or the `[theme]` table
+  (16 ANSI colors + fg/bg/cursor as `#rrggbb`).
+- **Font:** `font_family`, `font_size`, and `line_height`.
+- **Cursor:** the `[cursor]` table — `shape` and `blink`.
 - **Keys:** switch `keymap_preset` to `"tmux"`, or remap individual actions in
   `[keybindings]`.
 

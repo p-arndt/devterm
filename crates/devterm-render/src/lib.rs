@@ -88,8 +88,13 @@ pub struct Renderer {
     // Font state: `faces[0]` is the primary monospace face (drives metrics); the rest
     // are the fallback chain used only when the primary lacks a codepoint.
     faces: Vec<FontFace>,
+    /// User-preferred primary family (queried first when rebuilding `faces`); `None`
+    /// uses the hardcoded monospace chain.
+    font_family: Option<String>,
     base_font_px: f32,
     scale_factor: f64,
+    /// Line-height factor applied to the font's single-spaced cell height (`1.0` = default).
+    line_height: f32,
 
     // Derived metrics at the current scale.
     metrics: CellMetrics,

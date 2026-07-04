@@ -18,7 +18,7 @@ use alacritty_terminal::vte::ansi::{NamedColor, Processor};
 use crate::palette::Palette;
 use crate::resolve::{brighten, map_cursor_shape, resolve_color, resolve_indexed};
 use crate::selection::SelectionMode;
-use crate::snapshot::{Cursor, RenderCell, Snapshot};
+use crate::snapshot::{Cursor, CursorShape, RenderCell, Snapshot};
 
 // ---------------------------------------------------------------------------
 // Event listener: captures PtyWrite bytes and the window title.
@@ -112,6 +112,10 @@ pub struct Term {
     scrollback_lines: usize,
     /// Theme override for palette-backed default colours (see [`Palette`]).
     palette: Palette,
+    /// Fallback cursor shape used when the running program has not explicitly chosen one
+    /// (i.e. it still reports the default [`CursorShape::Block`]). See
+    /// [`set_default_cursor_shape`](Term::set_default_cursor_shape).
+    default_cursor_shape: CursorShape,
     /// Set by `advance`/`resize`/`scroll_display`, cleared by `snapshot`.
     dirty: StdCell<bool>,
 }
@@ -137,6 +141,7 @@ impl Term {
             state,
             scrollback_lines,
             palette: Palette::default(),
+            default_cursor_shape: CursorShape::Block,
             dirty: StdCell::new(true),
         }
     }
@@ -255,10 +260,20 @@ impl Term {
         let cursor_point = content.cursor.point;
         let cursor_line = (cursor_point.line.0 + display_offset as i32).clamp(0, rows as i32 - 1);
         let cursor_col = (cursor_point.column.0 as u16).min(cols.saturating_sub(1));
+        // alacritty does not distinguish "program left the default" from "program
+        // explicitly chose Block", so we treat a reported Block as unset and let our
+        // configured default win. Any non-Block shape is an explicit program choice
+        // (DECSCUSR) and is honoured verbatim.
+        let reported_shape = map_cursor_shape(content.cursor.shape);
+        let shape = if reported_shape == CursorShape::Block {
+            self.default_cursor_shape
+        } else {
+            reported_shape
+        };
         let cursor = Cursor {
             line: cursor_line as u16,
             col: cursor_col,
-            shape: map_cursor_shape(content.cursor.shape),
+            shape,
             color: cursor_color,
         };
 
@@ -290,6 +305,22 @@ impl Term {
     /// Scroll the display: positive = up into history, negative = toward live.
     pub fn scroll_display(&mut self, delta_lines: i32) {
         self.term.scroll_display(Scroll::Delta(delta_lines));
+        self.dirty.set(true);
+    }
+
+    /// Snap the display back to the live view (bottom of the grid), discarding any
+    /// scrollback offset. Marks the term dirty.
+    pub fn scroll_to_bottom(&mut self) {
+        self.term.scroll_display(Scroll::Bottom);
+        self.dirty.set(true);
+    }
+
+    /// Set the fallback cursor shape used when the running program has not explicitly
+    /// chosen one. Because alacritty reports the default as [`CursorShape::Block`] and
+    /// does not expose "unset", the override only replaces a reported `Block`; any
+    /// explicit non-Block shape from the program (DECSCUSR) still wins. Marks dirty.
+    pub fn set_default_cursor_shape(&mut self, shape: CursorShape) {
+        self.default_cursor_shape = shape;
         self.dirty.set(true);
     }
 
@@ -553,5 +584,191 @@ mod tests {
         // DECRST 2026 = end synchronized update.
         term.advance(b"\x1b[?2026l");
         assert!(!term.in_synchronized_update());
+    }
+
+    // ---------------------------------------------------------------------
+    // Anti-flicker regression (PLAN.md section 4, the "PSmux bug").
+    // ---------------------------------------------------------------------
+
+    /// A representative byte stream exercising plain text on several rows, SGR colour /
+    /// attribute changes, cursor moves, a line clear, and a DECSET-2026 synchronized
+    /// update block. Deliberately fixed (no randomness) so the test is deterministic.
+    fn representative_stream() -> Vec<u8> {
+        let mut s: Vec<u8> = Vec::new();
+        s.extend_from_slice(b"Hello world"); // row 0 plain text
+        s.extend_from_slice(b"\x1b[2;1H"); // CUP row 2 col 1
+        s.extend_from_slice(b"\x1b[31mred\x1b[0m"); // SGR red then reset
+        s.extend_from_slice(b"\x1b[3;1H\x1b[1mbold\x1b[0m"); // row 3, bold
+        s.extend_from_slice(b"\x1b[4;1H\x1b[3mital\x1b[0m"); // row 4, italic
+        s.extend_from_slice(b"\x1b[5;1H\x1b[4mundr\x1b[0m"); // row 5, underline
+        s.extend_from_slice(b"\x1b[6;1HZZZZZZ"); // row 6, junk to be cleared
+        s.extend_from_slice(b"\x1b[6;1H\x1b[2K"); // clear line 6
+        // Synchronized-update block: begin, draw, end.
+        s.extend_from_slice(b"\x1b[?2026h");
+        s.extend_from_slice(b"\x1b[7;1H\x1b[32msync\x1b[0m");
+        s.extend_from_slice(b"\x1b[8;1Hmore");
+        s.extend_from_slice(b"\x1b[?2026l");
+        s.extend_from_slice(b"\x1b[9;1Hafter"); // draw after the sync block
+        s
+    }
+
+    /// Deterministic, sortable projection of a snapshot: every visible cell plus the
+    /// cursor line/col/shape. Two snapshots with equal projections are visually identical.
+    #[allow(clippy::type_complexity)]
+    fn project(
+        snap: &Snapshot,
+    ) -> (
+        Vec<(u16, u16, char, Rgb, Rgb, bool, bool, bool)>,
+        (u16, u16, CursorShape),
+    ) {
+        let mut cells: Vec<(u16, u16, char, Rgb, Rgb, bool, bool, bool)> = snap
+            .cells
+            .iter()
+            .map(|c| {
+                (
+                    c.line,
+                    c.col,
+                    c.c,
+                    c.fg,
+                    c.bg,
+                    c.bold,
+                    c.italic,
+                    c.underline,
+                )
+            })
+            .collect();
+        cells.sort_by_key(|t| (t.0, t.1));
+        (
+            cells,
+            (snap.cursor.line, snap.cursor.col, snap.cursor.shape),
+        )
+    }
+
+    #[test]
+    fn chunk_invariance_final_state_identical() {
+        let stream = representative_stream();
+
+        // Reference: fed whole.
+        let mut whole = Term::new(20, 12, 100);
+        whole.advance(&stream);
+        let reference = project(&whole.snapshot());
+
+        // For every fixed chunk size, feeding the same bytes in that many pieces must
+        // land on byte-for-byte the same final projection. This walks essentially every
+        // split boundary of the stream.
+        for chunk in 1..=stream.len() {
+            let mut term = Term::new(20, 12, 100);
+            for piece in stream.chunks(chunk) {
+                term.advance(piece);
+            }
+            let got = project(&term.snapshot());
+            assert_eq!(got, reference, "mismatch at chunk size {chunk}");
+        }
+    }
+
+    #[test]
+    fn no_settle_mid_sync_across_split() {
+        let mut term = Term::new(20, 8, 100);
+
+        // Feed the BSU one byte at a time; the flag must stay false until the final byte
+        // of the sequence lands, then flip to true. This proves a split *inside* the BSU
+        // never settles the frame early.
+        let bsu = b"\x1b[?2026h";
+        for (i, b) in bsu.iter().enumerate() {
+            term.advance(&[*b]);
+            let last = i + 1 == bsu.len();
+            assert_eq!(
+                term.in_synchronized_update(),
+                last,
+                "BSU flag wrong after {} byte(s)",
+                i + 1
+            );
+        }
+
+        // Drawing inside the block keeps the flag set.
+        term.advance(b"\x1b[1;1Hdrawing");
+        assert!(term.in_synchronized_update());
+
+        // Feed the ESU one byte at a time; the flag must stay true until the final byte.
+        let esu = b"\x1b[?2026l";
+        for (i, b) in esu.iter().enumerate() {
+            term.advance(&[*b]);
+            let last = i + 1 == esu.len();
+            assert_eq!(
+                term.in_synchronized_update(),
+                !last,
+                "ESU flag wrong after {} byte(s)",
+                i + 1
+            );
+        }
+        assert!(!term.in_synchronized_update());
+    }
+
+    #[test]
+    fn scroll_to_bottom_snaps_to_live() {
+        let mut term = Term::new(10, 3, 100);
+        // Produce enough lines to build scrollback beyond the 3 visible rows.
+        for _ in 0..10 {
+            term.advance(b"line\r\n");
+        }
+        term.scroll_display(4); // scroll up into history
+        let snap = term.snapshot();
+        assert!(snap.scrollback_offset > 0, "expected to be scrolled up");
+
+        term.scroll_to_bottom();
+        assert!(term.dirty());
+        let snap = term.snapshot();
+        assert_eq!(snap.scrollback_offset, 0);
+    }
+
+    #[test]
+    fn default_cursor_shape_override_applies() {
+        let mut term = Term::new(20, 5, 100);
+        term.advance(b"x");
+
+        // No program choice, no override yet: the hardcoded default is Block.
+        assert_eq!(term.snapshot().cursor.shape, CursorShape::Block);
+
+        // Overriding the default is reflected in the next snapshot.
+        term.set_default_cursor_shape(CursorShape::Beam);
+        assert!(term.dirty());
+        assert_eq!(term.snapshot().cursor.shape, CursorShape::Beam);
+    }
+
+    #[test]
+    fn explicit_cursor_shape_beats_default_override() {
+        let mut term = Term::new(20, 5, 100);
+        term.set_default_cursor_shape(CursorShape::Beam);
+        // DECSCUSR 4 = steady underline: an explicit program choice.
+        term.advance(b"\x1b[4 q");
+        // The program's explicit non-Block choice wins over the default override.
+        assert_eq!(term.snapshot().cursor.shape, CursorShape::Underline);
+    }
+
+    #[test]
+    fn wide_char_occupies_two_columns_without_spacer_cell() {
+        let mut term = Term::new(20, 5, 100);
+        // A full-width CJK ideograph (width 2) followed by an ASCII 'X'.
+        term.advance("世X".as_bytes());
+        let snap = term.snapshot();
+
+        // Exactly one emitted cell carries the wide glyph, at column 0, flagged wide.
+        let wide_cells: Vec<&RenderCell> = snap.cells.iter().filter(|c| c.wide).collect();
+        assert_eq!(wide_cells.len(), 1);
+        let w = wide_cells[0];
+        assert_eq!(w.c, '世');
+        assert_eq!(w.col, 0);
+        assert!(w.wide);
+
+        // No stray cell at the spacer column (col 1).
+        assert!(cell_at(&snap, 0, 1).is_none());
+
+        // The trailing 'X' lands at column 2, not column 1.
+        let x = cell_at(&snap, 0, 2).expect("'X' after the wide glyph");
+        assert_eq!(x.c, 'X');
+        assert!(!x.wide);
+
+        // Cursor sits just past the 'X': columns 0-1 (wide) + 2 (X) => col 3.
+        assert_eq!(snap.cursor.col, 3);
     }
 }

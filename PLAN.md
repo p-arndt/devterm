@@ -119,14 +119,14 @@ M0 beweist die Kernthese. Alles danach ist Ausbau.
 ### M1 — v0.1 "täglich benutzbar" (Ziel: +4–6 Wochen)
 
 - [x] Splits horizontal/vertikal, Panes schließen, Fokus-Navigation (Keyboard + Maus-Klick)
-- [x] Pane-Resize (Keyboard) — Maus-Divider-Drag noch offen
+- [x] Pane-Resize (Keyboard, richtungsbasiert + Maus-Divider-Drag)
 - [x] Scrollback (konfigurierbares Limit) + Maus-/Keyboard-Scrolling
 - [x] Selektion (Maus-Drag) + Copy/Paste (System-Clipboard via `arboard`, bracketed paste)
-- [x] Font-Fallback-Kette (Nerd Font Symbole, CJK; Farb-Emoji monochrom → M4) + DPI-/Font-Size-Hot-Reload
+- [x] Font-Fallback-Kette (Nerd Font Symbole, CJK; Farb-Emoji monochrom → M4) + DPI-/Font-Family-/Font-Size-/Line-Height-Hot-Reload
 - [x] Shell-Auswahl: PowerShell 7, Windows PowerShell, cmd, Git Bash, WSL
 - [x] `config.toml` (Font, Größe, Theme, Shell, Scrollback) mit Hot-Reload (`notify`)
 - [x] Keybindings konfigurierbar (Default-Keymap + tmux-Preset als prefixfreie Direktbindungen)
-- [x] DECSET-2026-Support (Anti-Flacker) — feingranulares Damage-Tracking pro Zeile noch offen
+- [x] Anti-Flacker komplett: DECSET-2026 + Byte-Burst-Coalescing (~1,5 ms) + Skip-Clean-Frame-Damage (pro Pane; PSmux-Regressionstest) — feingranulares Damage pro Zeile bleibt Optimierung
 - [ ] **Abnahme:** Du benutzt DevTerm eine Woche als Haupt-Terminal, ohne zu Windows Terminal zurückzuwechseln
 
 ### M2 — v0.2 "projektorientiert" (Ziel: +4–6 Wochen)

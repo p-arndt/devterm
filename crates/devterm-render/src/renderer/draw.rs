@@ -121,23 +121,39 @@ impl Renderer {
             });
         }
 
-        // Cursor: block/underline/beam. A focused block cursor inverts its glyph below.
+        // Cursor: block/underline/beam. A focused block cursor is filled and inverts its
+        // glyph below; an unfocused block cursor is drawn as a hollow outline (the classic
+        // "unfocused terminal" look). Underline/beam are unchanged in both states.
         let cursor = snap.cursor;
         let block_cursor = pane.focused && cursor.shape == CursorShape::Block;
         if cursor.shape != CursorShape::Hidden {
             let cx = origin_x + cursor.col as f32 * cw;
             let cy = origin_y + cursor.line as f32 * ch;
-            let (pos, size) = match cursor.shape {
-                CursorShape::Block => ([cx, cy], [cw, ch]),
-                CursorShape::Underline => ([cx, cy + ch - 2.0], [cw, 2.0]),
-                CursorShape::Beam => ([cx, cy], [2.0, ch]),
-                CursorShape::Hidden => ([cx, cy], [0.0, 0.0]),
-            };
-            bg.push(BgInstance {
-                pos,
-                size,
-                color: linear_rgba(cursor.color, 1.0),
-            });
+            let color = linear_rgba(cursor.color, 1.0);
+            match cursor.shape {
+                CursorShape::Block if pane.focused => {
+                    bg.push(BgInstance {
+                        pos: [cx, cy],
+                        size: [cw, ch],
+                        color,
+                    });
+                }
+                // Unfocused block: a thin outline instead of a filled quad.
+                CursorShape::Block => {
+                    push_frame(bg, cx, cy, cw, ch, self.border_thickness(), cursor.color);
+                }
+                CursorShape::Underline => bg.push(BgInstance {
+                    pos: [cx, cy + ch - 2.0],
+                    size: [cw, 2.0],
+                    color,
+                }),
+                CursorShape::Beam => bg.push(BgInstance {
+                    pos: [cx, cy],
+                    size: [2.0, ch],
+                    color,
+                }),
+                CursorShape::Hidden => {}
+            }
         }
 
         // Glyphs.
