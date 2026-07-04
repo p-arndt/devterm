@@ -9,7 +9,9 @@ repository.workspace = true
 
 [dependencies]
 devterm-core = { workspace = true, features = ["serde"] }
-# Activated in M1/M2:
-# serde.workspace = true
-# toml.workspace = true
-# serde_norway.workspace = true   # project layouts (devterm.yml)
+serde.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+# Project layouts (devterm.yml) land in M2:
+# serde_norway.workspace = true
