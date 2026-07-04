@@ -11,8 +11,12 @@ env:
 
 jobs:
   test:
-    name: fmt + clippy + test (windows)
-    runs-on: windows-latest
+    name: fmt + clippy + test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -23,6 +27,15 @@ jobs:
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
+
+      # wgpu/winit need X11/Wayland dev headers to build on Linux.
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev
 
       - name: Format
         run: cargo fmt --all --check

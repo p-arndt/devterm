@@ -16,7 +16,8 @@ fn main() -> Result<()> {
     // Our logs default to `info`, but wgpu's internals are noisy (per-reconfigure backend
     // chatter); keep them at warn/error. `RUST_LOG` still overrides everything.
     env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=error,naga=warn"),
+        env_logger::Env::default()
+            .default_filter_or("info,wgpu_core=warn,wgpu_hal=error,naga=warn"),
     )
     .init();
 

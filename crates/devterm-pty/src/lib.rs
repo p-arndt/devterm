@@ -1,4 +1,4 @@
-//! PTY layer for DevTerm (Windows: ConPTY via `portable-pty`).
+//! PTY layer for DevTerm (Windows: ConPTY, Unix: native PTY — both via `portable-pty`).
 //!
 //! Responsibilities:
 //! - spawn a shell process on a pseudo-terminal,
@@ -60,21 +60,48 @@ pub struct PtyCommandSpec {
 }
 
 impl PtyCommandSpec {
-    /// PowerShell 7 (`pwsh.exe`) if on PATH, else Windows PowerShell
-    /// (`powershell.exe`). Resolution happens at spawn time.
+    /// The platform default interactive shell.
+    ///
+    /// - Windows: PowerShell 7 (`pwsh.exe`) if on PATH, else Windows PowerShell
+    ///   (`powershell.exe`).
+    /// - Unix: the user's `$SHELL` if set, else the first of `bash`, `zsh`, `sh`
+    ///   found on `PATH`, else `/bin/sh` as a last resort.
+    ///
+    /// Resolution happens at spawn time.
     pub fn default_shell() -> Self {
-        let program = if find_on_path("pwsh.exe").is_some() {
-            "pwsh.exe".to_string()
-        } else {
-            "powershell.exe".to_string()
-        };
         PtyCommandSpec {
-            program,
+            program: default_shell_program(),
             args: Vec::new(),
             cwd: None,
             env: Vec::new(),
         }
     }
+}
+
+/// Windows: PowerShell 7 if available, else Windows PowerShell.
+#[cfg(windows)]
+fn default_shell_program() -> String {
+    if find_on_path("pwsh.exe").is_some() {
+        "pwsh.exe".to_string()
+    } else {
+        "powershell.exe".to_string()
+    }
+}
+
+/// Unix: honor `$SHELL`, then probe common shells, then fall back to `/bin/sh`.
+#[cfg(not(windows))]
+fn default_shell_program() -> String {
+    if let Some(shell) = std::env::var_os("SHELL")
+        && !shell.is_empty()
+    {
+        return shell.to_string_lossy().into_owned();
+    }
+    for candidate in ["bash", "zsh", "sh"] {
+        if let Some(path) = find_on_path(candidate) {
+            return path.to_string_lossy().into_owned();
+        }
+    }
+    "/bin/sh".to_string()
 }
 
 /// Look up an executable name on the `PATH` environment variable.
@@ -278,6 +305,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
 
+    #[cfg(windows)]
     #[test]
     fn default_shell_picks_powershell() {
         let spec = PtyCommandSpec::default_shell();
@@ -285,6 +313,18 @@ mod tests {
             spec.program == "pwsh.exe" || spec.program == "powershell.exe",
             "unexpected default shell: {}",
             spec.program
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn default_shell_is_non_empty_on_unix() {
+        // Whatever the environment, resolution must yield a runnable program
+        // name — never an empty string (which would fail to spawn).
+        let spec = PtyCommandSpec::default_shell();
+        assert!(
+            !spec.program.is_empty(),
+            "default shell program should not be empty"
         );
     }
 
