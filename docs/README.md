@@ -95,7 +95,7 @@ cargo fmt --all --check
 2. `Ctrl+Shift+H` splits it **side by side**; `Ctrl+Shift+S` splits it **stacked**.
    Focus moves to the new pane.
 3. `Ctrl+Shift+<arrow>` moves focus between panes; the focused pane is outlined.
-   `Alt+Shift+<arrow>` grows (→/↓) or shrinks (←/↑) it.
+   `Alt+Shift+<arrow>` slides its border that way (grow into a neighbor, shrink at the edge).
 4. Click a pane to focus it; drag to select text; `Ctrl+Shift+C` copies,
    `Ctrl+Shift+V` pastes.
 5. Scroll the wheel (or `Shift+PageUp`/`PageDown`) to move through scrollback.

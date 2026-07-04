@@ -218,6 +218,23 @@ impl LayoutTree {
             .resize_path(self.focused, dir.axis(), factor, &mut applied);
     }
 
+    /// Interactive "border follows the arrow" resize. Moves the focused pane's border in
+    /// the pressed `dir`: if a pane borders it on that side, the focused pane **grows**
+    /// into it (the shared border slides toward `dir`); if `dir` points at the outer edge
+    /// (no neighbor there), the pane **shrinks**. `step` is the grow factor (> 1); shrinking
+    /// uses its reciprocal, so the two arrows on an axis are exact inverses.
+    ///
+    /// Example: with `[A | B]` and `B` focused, `Left` grows `B` leftward (toward `A`) and
+    /// `Right` shrinks it back — the border tracks the key either way.
+    pub fn resize_directional(&mut self, dir: Direction, step: f32) {
+        let factor = if self.neighbor(dir).is_some() {
+            step
+        } else {
+            1.0 / step
+        };
+        self.resize(dir, factor);
+    }
+
     /// Checks the tree's structural invariants. Useful in tests and `debug_assert!`
     /// contexts.
     ///
@@ -354,6 +371,26 @@ mod tests {
         assert!(width(&t) > before + 1e-4, "grow should widen the focused pane");
         t.resize(Direction::Left, 1.0 / 1.1); // shrink (opposite arrow, same axis)
         assert!((width(&t) - before).abs() < 1e-6, "shrink undoes the grow");
+        t.validate().unwrap();
+    }
+
+    #[test]
+    fn resize_directional_border_follows_the_arrow() {
+        // [1 | 2] with the RIGHT pane (2) focused.
+        let mut t = LayoutTree::new(p(1));
+        t.split(SplitDirection::Horizontal, p(2)); // focus -> p(2)
+        let width = |t: &LayoutTree| {
+            t.compute(Rect::UNIT).iter().find(|(id, _)| *id == p(2)).unwrap().1.w
+        };
+        let before = width(&t);
+
+        // Left points at the neighbor (pane 1) -> the right pane grows leftward.
+        t.resize_directional(Direction::Left, 1.1);
+        assert!(width(&t) > before + 1e-4, "Left grows the right pane toward its neighbor");
+
+        // Right points at the window edge (no neighbor) -> shrink, undoing the grow.
+        t.resize_directional(Direction::Right, 1.1);
+        assert!((width(&t) - before).abs() < 1e-6, "Right shrinks back — border tracks the key");
         t.validate().unwrap();
     }
 }
