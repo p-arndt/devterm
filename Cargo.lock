@@ -527,7 +527,7 @@ dependencies = [
 
 [[package]]
 name = "devterm-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -546,11 +546,11 @@ dependencies = [
 
 [[package]]
 name = "devterm-cli"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "devterm-config"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "devterm-core",
@@ -561,7 +561,7 @@ dependencies = [
 
 [[package]]
 name = "devterm-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proptest",
  "serde",
@@ -569,14 +569,14 @@ dependencies = [
 
 [[package]]
 name = "devterm-plugin"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "devterm-core",
 ]
 
 [[package]]
 name = "devterm-pty"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -588,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "devterm-render"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -605,7 +605,7 @@ dependencies = [
 
 [[package]]
 name = "devterm-term"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "alacritty_terminal",
  "devterm-core",
