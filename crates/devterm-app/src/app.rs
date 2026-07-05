@@ -22,6 +22,7 @@ mod pane;
 mod present;
 mod state;
 mod view;
+mod window;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -31,7 +32,7 @@ use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::ModifiersState;
-use winit::window::{CursorIcon, Window, WindowId};
+use winit::window::{CursorIcon, WindowId};
 
 use devterm_config::Config;
 use devterm_core::{IdGen, LayoutTree};
@@ -74,7 +75,7 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
 
-        let attributes = Window::default_attributes().with_title("DevTerm");
+        let attributes = window::initial_attributes(event_loop, "DevTerm");
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(err) => {
@@ -132,6 +133,8 @@ impl ApplicationHandler<UserEvent> for App {
             renderer,
             layout,
             panes,
+            overlay: None,
+            overlay_visible: false,
             ids,
             keymap: build_keymap(&self.config),
             palette,
@@ -273,11 +276,18 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 };
                 if lines != 0 {
-                    // Target the pane under the pointer, falling back to the focused one.
-                    let target = Self::pane_at(state, state.pointer)
-                        .unwrap_or_else(|| state.layout.focused());
-                    if let Some(pane) = state.panes.get_mut(&target) {
-                        pane.term.scroll_display(lines);
+                    if state.overlay_visible {
+                        // The floating terminal captures scrolling while it is shown.
+                        if let Some(overlay) = state.overlay.as_mut() {
+                            overlay.term.scroll_display(lines);
+                        }
+                    } else {
+                        // Target the pane under the pointer, falling back to the focused one.
+                        let target = Self::pane_at(state, state.pointer)
+                            .unwrap_or_else(|| state.layout.focused());
+                        if let Some(pane) = state.panes.get_mut(&target) {
+                            pane.term.scroll_display(lines);
+                        }
                     }
                     state.window.request_redraw();
                 }

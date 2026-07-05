@@ -20,6 +20,10 @@ use super::state::{AppState, GutterDrag};
 /// Extra hit-test padding (physical px) around a divider so it is easy to grab.
 const GUTTER_HIT_PAD: f32 = 3.0;
 
+/// The floating terminal's size as a fraction of the window (centered on both axes).
+const OVERLAY_W_FRAC: f32 = 0.6;
+const OVERLAY_H_FRAC: f32 = 0.5;
+
 impl App {
     // --- sizing ---------------------------------------------------------------
 
@@ -52,10 +56,72 @@ impl App {
                 let _ = pane.pty.resize(PtySize { cols, rows });
             }
         }
+        // Keep the floating terminal's grid in step with the window on every layout change.
+        Self::resize_overlay(state);
     }
 
-    /// The focused pane's current row count (for page scrolling).
+    // --- floating terminal geometry -------------------------------------------
+
+    /// The floating terminal's rectangle in unit (0..1) coordinates, centered on the window.
+    /// Shares the same coordinate space as [`LayoutTree::compute`] so it renders identically.
+    fn overlay_unit_rect() -> Rect {
+        Rect::new(
+            (1.0 - OVERLAY_W_FRAC) * 0.5,
+            (1.0 - OVERLAY_H_FRAC) * 0.5,
+            OVERLAY_W_FRAC,
+            OVERLAY_H_FRAC,
+        )
+    }
+
+    /// The floating terminal's rectangle in physical pixels.
+    fn overlay_pixel_rect(state: &AppState) -> Rect {
+        let win = Self::window_rect(state);
+        let u = Self::overlay_unit_rect();
+        Rect::new(u.x * win.w, u.y * win.h, u.w * win.w, u.h * win.h)
+    }
+
+    /// The floating terminal's cols/rows for the current window size.
+    pub(super) fn overlay_grid(state: &AppState) -> (u16, u16) {
+        let r = Self::overlay_pixel_rect(state);
+        state
+            .renderer
+            .grid_size_for(r.w.round().max(1.0) as u32, r.h.round().max(1.0) as u32)
+    }
+
+    /// Resize the floating terminal's model + child to match its current pixel rectangle.
+    pub(super) fn resize_overlay(state: &mut AppState) {
+        let (cols, rows) = Self::overlay_grid(state);
+        if let Some(overlay) = state.overlay.as_mut() {
+            overlay.term.resize(cols, rows);
+            let _ = overlay.pty.resize(PtySize { cols, rows });
+        }
+    }
+
+    /// The pane that currently receives keyboard input, copy/paste and scrolling: the
+    /// floating terminal while it is shown, otherwise the focused layout pane.
+    pub(super) fn active_pane(state: &AppState) -> Option<&super::pane::Pane> {
+        if state.overlay_visible {
+            state.overlay.as_ref()
+        } else {
+            state.panes.get(&state.layout.focused())
+        }
+    }
+
+    /// Mutable counterpart to [`active_pane`](Self::active_pane).
+    pub(super) fn active_pane_mut(state: &mut AppState) -> Option<&mut super::pane::Pane> {
+        if state.overlay_visible {
+            state.overlay.as_mut()
+        } else {
+            let focused = state.layout.focused();
+            state.panes.get_mut(&focused)
+        }
+    }
+
+    /// The active pane's current row count (for page scrolling).
     pub(super) fn focused_rows(state: &AppState) -> u16 {
+        if state.overlay_visible {
+            return Self::overlay_grid(state).1;
+        }
         let focused = state.layout.focused();
         Self::pixel_rects(state)
             .into_iter()
@@ -131,14 +197,39 @@ impl App {
             state.force_present = true;
         }
 
+        // Pump the floating terminal's PTY (drained regardless of visibility so a hidden
+        // scratch shell keeps running). If its child exits, drop and hide it.
+        if let Some(overlay) = state.overlay.as_mut() {
+            let mut overlay_exited = false;
+            while let Ok(event) = overlay.events.try_recv() {
+                match event {
+                    PtyEvent::Output(bytes) => overlay.term.advance(&bytes),
+                    PtyEvent::Exited(_code) => overlay_exited = true,
+                }
+            }
+            let writes = overlay.term.drain_pty_writes();
+            if !writes.is_empty() {
+                let _ = overlay.pty.write(&writes);
+            }
+            if overlay_exited {
+                state.overlay = None;
+                state.overlay_visible = false;
+                state.force_present = true;
+            }
+        }
+
         let focused = state.layout.focused();
-        // Only the focused pane's synchronized-update state gates tearing (matching the
-        // frozen contract): the end sequence arrives as more output and wakes us again.
-        let in_sync = state
-            .panes
-            .get(&focused)
-            .is_some_and(|pane| pane.term.in_synchronized_update());
-        let any_dirty = state.panes.values().any(|pane| pane.term.dirty());
+        // Only the active pane's synchronized-update state gates tearing (matching the
+        // frozen contract): the end sequence arrives as more output and wakes us again. The
+        // active pane is the floating terminal while it is shown, else the focused layout pane.
+        let in_sync = Self::active_pane(state).is_some_and(|pane| pane.term.in_synchronized_update());
+        // A hidden overlay is not drawn, so its dirtiness must not trigger a present.
+        let overlay_dirty = state.overlay_visible
+            && state
+                .overlay
+                .as_ref()
+                .is_some_and(|overlay| overlay.term.dirty());
+        let any_dirty = overlay_dirty || state.panes.values().any(|pane| pane.term.dirty());
 
         let now = Instant::now();
         let since_byte = now.saturating_duration_since(state.last_output);
@@ -174,24 +265,47 @@ impl App {
                 pane.last_snapshot = Some(pane.term.snapshot());
             }
         }
-
-        // Cursor blink: when the focused cursor is in its hidden phase, present a copy of
-        // its snapshot with the cursor suppressed (the cache keeps the real shape).
-        let mut hidden_snapshot: Option<Snapshot> = None;
-        if config.cursor.blink
-            && !state.blink_visible
-            && let Some(pane) = state.panes.get(&focused)
-            && let Some(snap) = pane.last_snapshot.as_ref()
+        if state.overlay_visible
+            && let Some(overlay) = state.overlay.as_mut()
+            && (overlay.last_snapshot.is_none() || overlay.term.dirty())
         {
-            let mut copy = snap.clone();
-            copy.cursor.shape = CursorShape::Hidden;
-            hidden_snapshot = Some(copy);
+            overlay.last_snapshot = Some(overlay.term.snapshot());
         }
 
-        let mut views: Vec<PaneView> = Vec::with_capacity(areas.len());
+        // While the floating terminal is shown it holds focus: the layout panes render
+        // unfocused (dim borders, hollow cursor) and the overlay carries the accent + live
+        // cursor. Otherwise the layout's focused pane is highlighted as usual.
+        let base_focused = if state.overlay_visible {
+            None
+        } else {
+            Some(focused)
+        };
+
+        // Cursor blink: when the active cursor is in its hidden phase, present a copy of its
+        // snapshot with the cursor suppressed (the cache keeps the real shape). Only the
+        // focused/active terminal blinks — the layout base while the overlay is up does not.
+        let blink_off = config.cursor.blink && !state.blink_visible;
+        let make_hidden = |snap: &Snapshot| {
+            let mut copy = snap.clone();
+            copy.cursor.shape = CursorShape::Hidden;
+            copy
+        };
+        let base_hidden: Option<Snapshot> = base_focused
+            .filter(|_| blink_off)
+            .and_then(|id| state.panes.get(&id))
+            .and_then(|pane| pane.last_snapshot.as_ref())
+            .map(&make_hidden);
+        let overlay_hidden: Option<Snapshot> = state
+            .overlay
+            .as_ref()
+            .filter(|_| state.overlay_visible && blink_off)
+            .and_then(|overlay| overlay.last_snapshot.as_ref())
+            .map(&make_hidden);
+
+        let mut views: Vec<PaneView> = Vec::with_capacity(areas.len() + 1);
         for (id, area) in &areas {
-            let is_focused = *id == focused;
-            let snapshot: &Snapshot = match (is_focused, hidden_snapshot.as_ref()) {
+            let is_focused = base_focused == Some(*id);
+            let snapshot: &Snapshot = match (is_focused, base_hidden.as_ref()) {
                 // Focused pane in the cursor's hidden blink phase: use the suppressed copy.
                 (true, Some(hidden)) => hidden,
                 _ => match state
@@ -210,14 +324,32 @@ impl App {
             });
         }
 
+        // The floating terminal is drawn as a separate top layer by the renderer so its
+        // opaque background occludes the layout text beneath it.
+        let overlay_view: Option<PaneView> = if state.overlay_visible {
+            state.overlay.as_ref().and_then(|overlay| {
+                let snapshot = match (overlay_hidden.as_ref(), overlay.last_snapshot.as_ref()) {
+                    (Some(hidden), _) => Some(hidden),
+                    (None, snap) => snap,
+                };
+                snapshot.map(|snapshot| PaneView {
+                    area: Self::overlay_unit_rect(),
+                    snapshot,
+                    focused: true,
+                })
+            })
+        } else {
+            None
+        };
+
         state.window.pre_present_notify();
-        match state.renderer.render(&views) {
+        match state.renderer.render(&views, overlay_view.as_ref()) {
             Ok(()) => {}
             Err(wgpu::SurfaceError::Lost) | Err(wgpu::SurfaceError::Outdated) => {
                 // Reconfigure the surface at the current size and retry once.
                 let size = state.window.inner_size();
                 state.renderer.resize(size.width, size.height);
-                let _ = state.renderer.render(&views);
+                let _ = state.renderer.render(&views, overlay_view.as_ref());
             }
             Err(wgpu::SurfaceError::OutOfMemory) => {
                 log::error!("wgpu surface out of memory; exiting");
@@ -235,10 +367,10 @@ impl App {
         state.force_present = false;
     }
 
-    /// Route a translated key sequence to the focused pane's child.
+    /// Route a translated key sequence to the active pane's child (the floating terminal
+    /// while it is shown, otherwise the focused layout pane).
     pub(super) fn send_input(state: &AppState, bytes: &[u8]) {
-        let focused = state.layout.focused();
-        if let Some(pane) = state.panes.get(&focused)
+        if let Some(pane) = Self::active_pane(state)
             && let Err(err) = pane.pty.write(bytes)
         {
             log::warn!("failed to write to pty: {err}");

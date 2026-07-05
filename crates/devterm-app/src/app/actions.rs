@@ -24,6 +24,26 @@ impl App {
         action: Action,
         event_loop: &ActiveEventLoop,
     ) {
+        // While the floating terminal captures interaction, layout-structure actions
+        // (split/focus/resize) would silently mutate the hidden layout underneath it, so
+        // they are suppressed. Copy/paste/scroll and close are re-targeted at the overlay.
+        if state.overlay_visible
+            && matches!(
+                action,
+                Action::SplitHorizontal
+                    | Action::SplitVertical
+                    | Action::FocusLeft
+                    | Action::FocusRight
+                    | Action::FocusUp
+                    | Action::FocusDown
+                    | Action::ResizeLeft
+                    | Action::ResizeRight
+                    | Action::ResizeUp
+                    | Action::ResizeDown
+            )
+        {
+            return;
+        }
         match action {
             Action::SplitHorizontal => {
                 Self::split_pane(state, config, proxy, SplitDirection::Horizontal)
@@ -31,6 +51,9 @@ impl App {
             Action::SplitVertical => {
                 Self::split_pane(state, config, proxy, SplitDirection::Vertical)
             }
+            // With the overlay up, "close pane" dismisses the floating terminal (killing its
+            // child); otherwise it closes the focused layout pane.
+            Action::ClosePane if state.overlay_visible => Self::close_overlay(state),
             Action::ClosePane => Self::close_focused(state, event_loop),
             Action::FocusLeft => Self::focus(state, Direction::Left),
             Action::FocusRight => Self::focus(state, Direction::Right),
@@ -47,6 +70,7 @@ impl App {
             Action::ScrollPageUp => Self::scroll_page(state, 1),
             Action::ScrollPageDown => Self::scroll_page(state, -1),
             Action::OpenConfig => Self::open_config(state, config, proxy),
+            Action::ToggleFloatingTerminal => Self::toggle_floating(state, config, proxy),
             Action::Quit => event_loop.exit(),
         }
     }
@@ -137,6 +161,38 @@ impl App {
         }
     }
 
+    /// Toggle the floating "scratch" terminal. The first show spawns its child (the config
+    /// shell); later toggles just hide/show it, keeping the process and its scrollback alive.
+    fn toggle_floating(state: &mut AppState, config: &Config, proxy: &EventLoopProxy<UserEvent>) {
+        if state.overlay_visible {
+            state.overlay_visible = false;
+        } else {
+            if state.overlay.is_none() {
+                let (cols, rows) = Self::overlay_grid(state);
+                match build_pane(config, proxy, state.palette, cols, rows) {
+                    Ok(pane) => state.overlay = Some(pane),
+                    Err(err) => {
+                        log::error!("failed to spawn floating terminal: {err}");
+                        return;
+                    }
+                }
+            }
+            state.overlay_visible = true;
+            // Re-derive the overlay grid from the current window size before it is shown.
+            Self::resize_overlay(state);
+        }
+        state.force_present = true;
+        state.window.request_redraw();
+    }
+
+    /// Dismiss the floating terminal, dropping its pane (its `Pty` `Drop` kills the child).
+    pub(super) fn close_overlay(state: &mut AppState) {
+        state.overlay = None;
+        state.overlay_visible = false;
+        state.force_present = true;
+        state.window.request_redraw();
+    }
+
     fn focus(state: &mut AppState, dir: Direction) {
         if state.layout.move_focus(dir) {
             // Focus changes no terminal, so force a present to move the highlight.
@@ -157,12 +213,14 @@ impl App {
     }
 
     fn scroll(state: &mut AppState, lines: i32) {
-        let focused = state.layout.focused();
-        if let Some(pane) = state.panes.get_mut(&focused) {
+        {
+            let Some(pane) = Self::active_pane_mut(state) else {
+                return;
+            };
             pane.term.scroll_display(lines);
-            state.force_present = true;
-            state.window.request_redraw();
         }
+        state.force_present = true;
+        state.window.request_redraw();
     }
 
     fn scroll_page(state: &mut AppState, sign: i32) {
@@ -172,11 +230,7 @@ impl App {
 
     /// Copy the focused pane's selection to the system clipboard.
     fn copy_selection(state: &mut AppState) {
-        let focused = state.layout.focused();
-        let Some(text) = state
-            .panes
-            .get(&focused)
-            .and_then(|pane| pane.term.selected_text())
+        let Some(text) = Self::active_pane(state).and_then(|pane| pane.term.selected_text())
         else {
             return;
         };
@@ -199,8 +253,7 @@ impl App {
             },
             None => return,
         };
-        let focused = state.layout.focused();
-        let Some(pane) = state.panes.get(&focused) else {
+        let Some(pane) = Self::active_pane(state) else {
             return;
         };
         let bytes = if pane.term.bracketed_paste() {

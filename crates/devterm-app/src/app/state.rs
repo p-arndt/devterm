@@ -39,6 +39,13 @@ pub(super) struct AppState {
     pub(super) renderer: Renderer,
     pub(super) layout: LayoutTree,
     pub(super) panes: HashMap<PaneId, Pane>,
+    /// A floating "scratch" terminal drawn centered on top of the layout, spawned lazily on
+    /// the first toggle. It lives outside the [`LayoutTree`]; when `overlay_visible` it
+    /// captures keyboard input, copy/paste and scrolling. Dropped when its child exits or it
+    /// is closed.
+    pub(super) overlay: Option<Pane>,
+    /// Whether the floating terminal is currently shown (and capturing interaction).
+    pub(super) overlay_visible: bool,
     pub(super) ids: IdGen,
     /// Resolved chord -> action lookup, rebuilt on config reload.
     pub(super) keymap: HashMap<KeyChord, Action>,
