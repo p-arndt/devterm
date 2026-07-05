@@ -1,0 +1,212 @@
+name: Build and Publish Release
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags: ['*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build, e.g. 0.2.0 or 0.2.0-beta.1 ("v" prefix optional). Leave empty to use the workspace Cargo.toml version with a -pre.<run> suffix.'
+        required: false
+        type: string
+      prerelease:
+        description: 'Mark as a GitHub pre-release'
+        required: false
+        type: boolean
+        default: true
+      draft:
+        description: 'Create as a draft so you can review/publish it manually'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Resolve the version and release metadata once, so every downstream job
+  # agrees on the tag, prerelease/draft flags, and the release notes.
+  # ---------------------------------------------------------------------------
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      draft: ${{ steps.meta.outputs.draft }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve version + flags
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+            if [ -z "$VERSION" ]; then
+              # No version given: derive from the workspace Cargo.toml version and
+              # suffix with the semver pre-release id "-pre.<run>" so each manual
+              # run gets its own, ever-incrementing version.
+              PKG_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
+              VERSION="${PKG_VERSION}-pre.${{ github.run_number }}"
+            fi
+            [[ "$VERSION" == v* ]] || VERSION="v$VERSION"
+            PRERELEASE="${{ inputs.prerelease }}"
+            DRAFT="${{ inputs.draft }}"
+          else
+            VERSION="${GITHUB_REF_NAME}"
+            DRAFT=false
+            # Semver pre-release tags (e.g. v0.2.0-beta.1) are flagged automatically.
+            if [[ "$VERSION" == *-* ]]; then PRERELEASE=true; else PRERELEASE=false; fi
+          fi
+          echo "version=$VERSION"       >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "draft=$DRAFT"           >> "$GITHUB_OUTPUT"
+
+      - name: Generate release notes
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+        run: |
+          # Range = commits since the previous tag (falls back to the whole
+          # history for the very first release).
+          PREV_TAG=$(git tag --sort=-creatordate | grep -vFx "$VERSION" | head -n1 || true)
+          if [ -n "$PREV_TAG" ]; then RANGE="${PREV_TAG}..HEAD"; else RANGE="HEAD"; fi
+
+          if [ "$PRERELEASE" = "true" ]; then
+            echo "## 🧪 Pre-release $VERSION" > RELEASE_NOTES.md
+          else
+            echo "## 🚀 Release $VERSION" > RELEASE_NOTES.md
+          fi
+          echo "" >> RELEASE_NOTES.md
+          git log --no-merges --pretty='- %s (%h)' $RANGE >> RELEASE_NOTES.md || true
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: RELEASE_NOTES.md
+
+  # ---------------------------------------------------------------------------
+  # Build the `devterm` GUI binary on each target OS.
+  # (`dt` CLI is a stub — deferred to M2 — so it is intentionally not shipped.)
+  # ---------------------------------------------------------------------------
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain (matches rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # wgpu/winit need X11/Wayland dev headers to build on Linux.
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev
+
+      # Statically link the MSVC runtime on Windows -> a self-contained
+      # devterm.exe with no vcruntime DLL dependency.
+      - name: Set Windows static CRT
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
+
+      - name: Build GUI binary
+        run: cargo build -p devterm-app --release --target ${{ matrix.target }}
+
+      - name: Stage artifact (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          V: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          NAME="devterm-${V}-${TARGET}"
+          mkdir -p "dist/$NAME"
+          cp "target/${TARGET}/release/devterm" "dist/$NAME/"
+          cp README.md LICENSE* "dist/$NAME/" 2>/dev/null || true
+          tar -C dist -czf "dist/${NAME}.tar.gz" "$NAME"
+          ls -l dist
+
+      - name: Stage artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          V: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          NAME="devterm-${V}-${TARGET}"
+          mkdir -p "dist/$NAME"
+          cp "target/${TARGET}/release/devterm.exe" "dist/$NAME/"
+          cp README.md LICENSE* "dist/$NAME/" 2>/dev/null || true
+          powershell -Command "Compress-Archive -Path 'dist/$env:NAME/*' -DestinationPath 'dist/$env:NAME.zip'"
+          ls -l dist
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  # ---------------------------------------------------------------------------
+  # Collect every platform's archive + the notes, then cut the GitHub Release.
+  # ---------------------------------------------------------------------------
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release files
+        shell: bash
+        run: |
+          mkdir -p dist-release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) \
+            -exec cp {} dist-release/ \;
+          ls -l dist-release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.version }}
+          body_path: artifacts/release-notes/RELEASE_NOTES.md
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
+          draft: ${{ needs.prepare.outputs.draft }}
+          files: dist-release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
