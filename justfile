@@ -71,6 +71,26 @@ deny:
 # The full local CI gate — mirrors .github/workflows/ci.yml. Run before pushing.
 ci: fmt-check clippy test
 
+# --- publish ---------------------------------------------------------------
+# (`release` above builds a binary; these recipes cut a versioned GitHub release.)
+
+# Print the current workspace version (from Cargo.toml).
+version:
+    @node -e "import('./scripts/set-version.mjs').then(m => console.log(m.readVersion()))"
+
+# Stamp a version into the workspace Cargo.toml WITHOUT committing. Accepts a
+# bump keyword or an explicit version:
+#   just set-version patch        just set-version 0.2.0
+set-version bump="patch":
+    node scripts/set-version.mjs {{bump}}
+
+# Cut a release: bump the version (patch|minor|major, or explicit x.y.z), refresh
+# Cargo.lock, commit, tag `v<x.y.z>`, and push -> triggers the "Build and Publish
+# Release" workflow (Linux + Windows binaries). Refuses to run on a dirty tree.
+#   just publish            just publish minor            just publish 1.0.0
+publish bump="patch":
+    node scripts/release.mjs {{bump}}
+
 # --- misc ------------------------------------------------------------------
 
 # Build API docs and open them in the browser.
