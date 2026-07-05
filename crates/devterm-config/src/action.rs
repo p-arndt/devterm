@@ -46,6 +46,8 @@ pub enum Action {
     ScrollPageDown,
     /// Open `config.toml` in the user's editor.
     OpenConfig,
+    /// Open the inline settings overlay (arrow-key navigable).
+    OpenSettings,
     /// Show/hide the floating "scratch" terminal overlaid on the layout.
     ToggleFloatingTerminal,
     /// Quit the application.
@@ -54,7 +56,7 @@ pub enum Action {
 
 impl Action {
     /// All actions, in declaration order. Used to prove presets are exhaustive.
-    pub const ALL: [Action; 20] = [
+    pub const ALL: [Action; 21] = [
         Action::SplitHorizontal,
         Action::SplitVertical,
         Action::ClosePane,
@@ -73,6 +75,7 @@ impl Action {
         Action::ScrollPageUp,
         Action::ScrollPageDown,
         Action::OpenConfig,
+        Action::OpenSettings,
         Action::ToggleFloatingTerminal,
         Action::Quit,
     ];
@@ -98,6 +101,7 @@ impl Action {
             Action::ScrollPageUp => "scroll-page-up",
             Action::ScrollPageDown => "scroll-page-down",
             Action::OpenConfig => "open-config",
+            Action::OpenSettings => "open-settings",
             Action::ToggleFloatingTerminal => "toggle-floating-terminal",
             Action::Quit => "quit",
         }

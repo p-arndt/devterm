@@ -56,6 +56,9 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// Names of every built-in theme, in a stable order (for pickers / cycling).
+    pub const BUILTIN_NAMES: &'static [&'static str] = &["default", "gruvbox-dark"];
+
     /// Look up a built-in theme by name. Returns `None` for unknown names.
     ///
     /// Known names: `"default"` (the xterm system palette) and `"gruvbox-dark"`.
