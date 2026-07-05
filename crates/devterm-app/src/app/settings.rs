@@ -180,7 +180,10 @@ impl Field {
                     CursorShapePref::Underline,
                     CursorShapePref::Beam,
                 ];
-                let idx = SHAPES.iter().position(|s| *s == cfg.cursor.shape).unwrap_or(0);
+                let idx = SHAPES
+                    .iter()
+                    .position(|s| *s == cfg.cursor.shape)
+                    .unwrap_or(0);
                 cfg.cursor.shape = SHAPES[wrap(SHAPES.len(), idx, dir)];
             }
             Field::CursorBlink => cfg.cursor.blink = !cfg.cursor.blink,
@@ -245,7 +248,11 @@ impl SettingsMenu {
     }
 
     /// Handle one pressed key event. Returns what the caller should do next.
-    pub(super) fn handle_key(&mut self, event: &KeyEvent, mods: ModifiersState) -> SettingsResponse {
+    pub(super) fn handle_key(
+        &mut self,
+        event: &KeyEvent,
+        mods: ModifiersState,
+    ) -> SettingsResponse {
         // Chord-capture (Keybindings page) swallows everything until it resolves.
         if self.capturing {
             return self.handle_capture(event, mods);
@@ -507,7 +514,10 @@ impl SettingsMenu {
         } else if self.capturing {
             ("Press the new key combo…    Esc: cancel".to_owned(), accent)
         } else if self.editing.is_some() {
-            ("Type to edit    Enter: commit    Esc: cancel".to_owned(), dim)
+            (
+                "Type to edit    Enter: commit    Esc: cancel".to_owned(),
+                dim,
+            )
         } else {
             let text = match self.page {
                 Page::General => {
@@ -632,10 +642,7 @@ fn key_rows(config: &Config) -> Vec<(Action, Option<KeyChord>)> {
     Action::ALL
         .iter()
         .map(|action| {
-            let chord = resolved
-                .iter()
-                .find(|(_, a)| a == action)
-                .map(|(c, _)| *c);
+            let chord = resolved.iter().find(|(_, a)| a == action).map(|(c, _)| *c);
             (*action, chord)
         })
         .collect()
