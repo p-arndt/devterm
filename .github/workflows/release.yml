@@ -55,7 +55,7 @@ jobs:
               # No version given: derive from the workspace Cargo.toml version and
               # suffix with the semver pre-release id "-pre.<run>" so each manual
               # run gets its own, ever-incrementing version.
-              PKG_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
+              PKG_VERSION=$(node -e "import('./scripts/set-version.mjs').then(m => console.log(m.readVersion()))")
               VERSION="${PKG_VERSION}-pre.${{ github.run_number }}"
             fi
             [[ "$VERSION" == v* ]] || VERSION="v$VERSION"
