@@ -223,8 +223,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 // The inline settings overlay captures all keyboard input while open.
                 if let Some(menu) = state.settings.as_mut() {
-                    let response =
-                        menu.handle_key(&event.logical_key, event.text.as_deref(), self.modifiers);
+                    let response = menu.handle_key(&event, self.modifiers);
                     Self::apply_settings_response(state, &self.config, &self.proxy, response);
                     return;
                 }

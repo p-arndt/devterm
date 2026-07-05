@@ -24,6 +24,11 @@ const GUTTER_HIT_PAD: f32 = 3.0;
 const OVERLAY_W_FRAC: f32 = 0.6;
 const OVERLAY_H_FRAC: f32 = 0.5;
 
+/// The settings overlay's size as a fraction of the window. Taller than the floating
+/// terminal so the keybindings list has room to breathe.
+const SETTINGS_W_FRAC: f32 = 0.7;
+const SETTINGS_H_FRAC: f32 = 0.78;
+
 impl App {
     // --- sizing ---------------------------------------------------------------
 
@@ -86,6 +91,28 @@ impl App {
         state
             .renderer
             .grid_size_for(r.w.round().max(1.0) as u32, r.h.round().max(1.0) as u32)
+    }
+
+    // --- settings overlay geometry --------------------------------------------
+
+    /// The settings overlay's rectangle in unit (0..1) coordinates, centered on the window.
+    fn settings_unit_rect() -> Rect {
+        Rect::new(
+            (1.0 - SETTINGS_W_FRAC) * 0.5,
+            (1.0 - SETTINGS_H_FRAC) * 0.5,
+            SETTINGS_W_FRAC,
+            SETTINGS_H_FRAC,
+        )
+    }
+
+    /// The settings overlay's cols/rows for the current window size.
+    fn settings_grid(state: &AppState) -> (u16, u16) {
+        let win = Self::window_rect(state);
+        let u = Self::settings_unit_rect();
+        state.renderer.grid_size_for(
+            (u.w * win.w).round().max(1.0) as u32,
+            (u.h * win.h).round().max(1.0) as u32,
+        )
     }
 
     /// Resize the floating terminal's model + child to match its current pixel rectangle.
@@ -328,7 +355,7 @@ impl App {
         // as the top overlay layer (taking precedence over the floating terminal). It is
         // owned here so the `PaneView` below can borrow it for the render call.
         let settings_snapshot: Option<Snapshot> = if state.settings.is_some() {
-            let (cols, rows) = Self::overlay_grid(state);
+            let (cols, rows) = Self::settings_grid(state);
             state
                 .settings
                 .as_ref()
@@ -342,7 +369,7 @@ impl App {
         // open, replaces it as that top layer.
         let overlay_view: Option<PaneView> = if let Some(snapshot) = settings_snapshot.as_ref() {
             Some(PaneView {
-                area: Self::overlay_unit_rect(),
+                area: Self::settings_unit_rect(),
                 snapshot,
                 focused: true,
             })
