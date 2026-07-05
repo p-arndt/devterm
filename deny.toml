@@ -4,6 +4,21 @@
 [advisories]
 version = 2
 yanked = "deny"
+# Ignored advisories are all deep transitive deps with no upgrade path under our
+# current winit/wgpu versions, and none are reachable from devterm's usage.
+# Revisit when winit / smithay-client-toolkit / wgpu are bumped.
+ignore = [
+    # quick-xml DoS on untrusted XML. Only pulled in by wayland-scanner, which
+    # parses the trusted Wayland protocol XML files bundled at build time — never
+    # attacker-controlled input. wayland-scanner 0.31.10 pins quick-xml "^0.39",
+    # so the fixed 0.41 can't be selected without a winit major bump.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+    # paste: unmaintained, no safe upgrade. Build-time proc-macro via metal/wgpu-hal.
+    "RUSTSEC-2024-0436",
+    # ttf-parser: unmaintained, no safe upgrade. Transitive via fontdb / ab_glyph.
+    "RUSTSEC-2026-0192",
+]
 
 [licenses]
 version = 2
