@@ -249,7 +249,8 @@ impl App {
         // Only the active pane's synchronized-update state gates tearing (matching the
         // frozen contract): the end sequence arrives as more output and wakes us again. The
         // active pane is the floating terminal while it is shown, else the focused layout pane.
-        let in_sync = Self::active_pane(state).is_some_and(|pane| pane.term.in_synchronized_update());
+        let in_sync =
+            Self::active_pane(state).is_some_and(|pane| pane.term.in_synchronized_update());
         // A hidden overlay is not drawn, so its dirtiness must not trigger a present.
         let overlay_dirty = state.overlay_visible
             && state

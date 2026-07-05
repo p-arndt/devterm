@@ -282,8 +282,7 @@ impl App {
 
     /// Copy the focused pane's selection to the system clipboard.
     fn copy_selection(state: &mut AppState) {
-        let Some(text) = Self::active_pane(state).and_then(|pane| pane.term.selected_text())
-        else {
+        let Some(text) = Self::active_pane(state).and_then(|pane| pane.term.selected_text()) else {
             return;
         };
         if let Some(clipboard) = Self::clipboard(state)
