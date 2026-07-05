@@ -159,6 +159,20 @@ impl Config {
         resolved
     }
 
+    /// Serialize to a TOML file, creating the parent directory if needed.
+    ///
+    /// Writes the full effective config (every field, defaults included), so any
+    /// comments or hand-formatting in an existing file are replaced. Used by the
+    /// inline settings overlay to persist edits; the file watcher then hot-reloads.
+    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let text = toml::to_string_pretty(self)?;
+        std::fs::write(path, text)?;
+        Ok(())
+    }
+
     /// The default config file path (`%APPDATA%\DevTerm\config.toml`).
     pub fn default_path() -> PathBuf {
         let mut path = match std::env::var("APPDATA") {

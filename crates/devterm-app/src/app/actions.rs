@@ -10,6 +10,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use super::App;
 use super::input::{build_keymap, palette_from_theme, term_cursor_shape};
 use super::pane::{build_pane, build_pane_with_spec};
+use super::settings::{SettingsMenu, SettingsResponse};
 use super::state::{AppState, UserEvent};
 
 impl App {
@@ -70,6 +71,7 @@ impl App {
             Action::ScrollPageUp => Self::scroll_page(state, 1),
             Action::ScrollPageDown => Self::scroll_page(state, -1),
             Action::OpenConfig => Self::open_config(state, config, proxy),
+            Action::OpenSettings => Self::open_settings(state, config),
             Action::ToggleFloatingTerminal => Self::toggle_floating(state, config, proxy),
             Action::Quit => event_loop.exit(),
         }
@@ -126,6 +128,56 @@ impl App {
             }
         };
         Self::insert_split_pane(state, SplitDirection::Vertical, pane);
+    }
+
+    // --- inline settings overlay ----------------------------------------------
+
+    /// Open the inline settings overlay, seeding it from the current config. Hides the
+    /// floating terminal so only one overlay is shown at a time.
+    fn open_settings(state: &mut AppState, config: &Config) {
+        if state.settings.is_none() {
+            state.settings = Some(SettingsMenu::new(config.clone()));
+        }
+        state.overlay_visible = false;
+        state.force_present = true;
+        state.window.request_redraw();
+    }
+
+    /// Apply the settings overlay's response to a key: repaint, close (persisting edits),
+    /// or bail out to the raw-file editor.
+    pub(super) fn apply_settings_response(
+        state: &mut AppState,
+        config: &Config,
+        proxy: &EventLoopProxy<UserEvent>,
+        response: SettingsResponse,
+    ) {
+        match response {
+            SettingsResponse::Ignore => {}
+            SettingsResponse::Redraw => {
+                state.force_present = true;
+                state.window.request_redraw();
+            }
+            SettingsResponse::Close => Self::close_settings(state),
+            SettingsResponse::OpenEditor => {
+                Self::close_settings(state);
+                Self::open_config(state, config, proxy);
+            }
+        }
+    }
+
+    /// Close the settings overlay, persisting the edited config to disk if it changed. The
+    /// file watcher then hot-reloads it, applying the changes live.
+    fn close_settings(state: &mut AppState) {
+        if let Some(menu) = state.settings.take()
+            && menu.dirty
+        {
+            let path = Config::default_path();
+            if let Err(err) = menu.config.save(&path) {
+                log::error!("failed to save config from settings overlay: {err}");
+            }
+        }
+        state.force_present = true;
+        state.window.request_redraw();
     }
 
     /// A provisional cols/rows for a freshly spawned pane; `resize_panes` corrects it to the

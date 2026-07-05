@@ -275,7 +275,7 @@ impl App {
         // While the floating terminal is shown it holds focus: the layout panes render
         // unfocused (dim borders, hollow cursor) and the overlay carries the accent + live
         // cursor. Otherwise the layout's focused pane is highlighted as usual.
-        let base_focused = if state.overlay_visible {
+        let base_focused = if state.overlay_visible || state.settings.is_some() {
             None
         } else {
             Some(focused)
@@ -324,9 +324,29 @@ impl App {
             });
         }
 
+        // The inline settings overlay, when open, is synthesized into a snapshot and drawn
+        // as the top overlay layer (taking precedence over the floating terminal). It is
+        // owned here so the `PaneView` below can borrow it for the render call.
+        let settings_snapshot: Option<Snapshot> = if state.settings.is_some() {
+            let (cols, rows) = Self::overlay_grid(state);
+            state
+                .settings
+                .as_ref()
+                .map(|menu| menu.snapshot(&state.palette, cols, rows))
+        } else {
+            None
+        };
+
         // The floating terminal is drawn as a separate top layer by the renderer so its
-        // opaque background occludes the layout text beneath it.
-        let overlay_view: Option<PaneView> = if state.overlay_visible {
+        // opaque background occludes the layout text beneath it. The settings overlay, when
+        // open, replaces it as that top layer.
+        let overlay_view: Option<PaneView> = if let Some(snapshot) = settings_snapshot.as_ref() {
+            Some(PaneView {
+                area: Self::overlay_unit_rect(),
+                snapshot,
+                focused: true,
+            })
+        } else if state.overlay_visible {
             state.overlay.as_ref().and_then(|overlay| {
                 let snapshot = match (overlay_hidden.as_ref(), overlay.last_snapshot.as_ref()) {
                     (Some(hidden), _) => Some(hidden),

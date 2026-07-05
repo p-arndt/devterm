@@ -57,8 +57,10 @@ pub fn default_keymap() -> Vec<(KeyChord, Action)> {
         (chord("ctrl+shift+j"), Action::ScrollLineDown),
         (chord("shift+pageup"), Action::ScrollPageUp),
         (chord("shift+pagedown"), Action::ScrollPageDown),
-        // Editor-style "open settings" chord (matches VS Code's Ctrl+,).
-        (chord("ctrl+,"), Action::OpenConfig),
+        // Editor-style "open settings" chord (matches VS Code's Ctrl+,): opens the
+        // inline overlay. Ctrl+Shift+, still opens the raw file in an editor.
+        (chord("ctrl+,"), Action::OpenSettings),
+        (chord("ctrl+shift+,"), Action::OpenConfig),
         // Quake-style drop-down scratch terminal.
         (chord("ctrl+shift+t"), Action::ToggleFloatingTerminal),
         (chord("ctrl+shift+q"), Action::Quit),
@@ -96,7 +98,8 @@ pub fn tmux_preset() -> Vec<(KeyChord, Action)> {
         (chord("ctrl+alt+j"), Action::ScrollLineDown),
         (chord("ctrl+alt+pageup"), Action::ScrollPageUp),
         (chord("ctrl+alt+pagedown"), Action::ScrollPageDown),
-        (chord("ctrl+alt+,"), Action::OpenConfig),
+        (chord("ctrl+alt+,"), Action::OpenSettings),
+        (chord("ctrl+alt+shift+,"), Action::OpenConfig),
         (chord("ctrl+alt+t"), Action::ToggleFloatingTerminal),
         (chord("ctrl+alt+q"), Action::Quit),
     ]

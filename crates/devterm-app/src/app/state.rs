@@ -46,6 +46,10 @@ pub(super) struct AppState {
     pub(super) overlay: Option<Pane>,
     /// Whether the floating terminal is currently shown (and capturing interaction).
     pub(super) overlay_visible: bool,
+    /// The inline settings overlay while it is open; `None` when closed. When present it
+    /// captures all keyboard input and is drawn (like the floating terminal) as the top
+    /// overlay layer, taking precedence over it.
+    pub(super) settings: Option<super::settings::SettingsMenu>,
     pub(super) ids: IdGen,
     /// Resolved chord -> action lookup, rebuilt on config reload.
     pub(super) keymap: HashMap<KeyChord, Action>,
