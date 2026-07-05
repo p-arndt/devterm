@@ -127,12 +127,19 @@ alive. While it is shown it captures typing, copy/paste and scrolling; `close-pa
 dismisses it (killing its child), and typing `exit` closes it too. Layout actions
 (split/focus/resize) are ignored while it is up.
 
-The settings overlay (`open-settings`, `Ctrl+,`) is a centered panel listing the common
-options (font, theme, shell, cursor, …). Navigate rows with `Up`/`Down`, change the
-selected value with `Left`/`Right`, and press `Enter` to edit a text field (font family)
-or cycle other fields. `Esc` closes it, writing any changes back to `config.toml` (which
-then hot-reloads). `Ctrl+E` closes the overlay and opens the raw file in your editor
-instead.
+The settings overlay (`open-settings`, `Ctrl+,`) is a centered panel with two pages,
+switched with `Tab`:
+
+- **General** — the common options (font, theme, shell, cursor, …). Navigate rows with
+  `Up`/`Down`, change the selected value with `Left`/`Right`, and press `Enter` to edit a
+  text field (font family) or cycle other fields.
+- **Keybindings** — one row per action showing its current chord. Select an action with
+  `Up`/`Down`, press `Enter`, then press the new key combo to rebind it. A combo already
+  used by another action is rejected (shown in the footer) rather than silently stolen.
+  Rebinding *moves* the binding — the action's old chord stops working.
+
+`Esc` closes the overlay, writing any changes back to `config.toml` (which then
+hot-reloads). `Ctrl+E` closes it and opens the raw file in your editor instead.
 
 The editor used by `open-config` is `$VISUAL`, then `$EDITOR`, falling back to `vi`
 (`notepad` on Windows). It opens `config.toml` in a new pane, so a terminal editor

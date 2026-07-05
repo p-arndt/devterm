@@ -74,6 +74,12 @@ blink = false
 # "ctrl+shift+d" = "split-horizontal"
 ```
 
+> **Tip:** the settings overlay (`Ctrl+,`) has a **Keybindings** page (press `Tab`) that
+> edits this table for you — select an action, press `Enter`, then press the new chord.
+> A user override is authoritative for the action it names: rebinding an action *moves* it
+> (its preset chord stops working) rather than adding a second chord. To give one action
+> several chords, list each `chord = action` line explicitly.
+
 ## Settings reference
 
 | Key | Type | Default | Meaning |
@@ -89,7 +95,7 @@ blink = false
 | `theme_name` | string | *(unset)* | Optional built-in theme to start from: `default` or `gruvbox-dark`. |
 | `[theme]` | table | xterm palette | 16 ANSI colors + foreground/background/cursor; layers over `theme_name`. |
 | `[cursor]` | table | — | `shape` (`default`/`block`/`underline`/`beam`) and `blink` (bool). |
-| `[keybindings]` | table | `{}` | Chord → action overrides, applied on top of the preset. |
+| `[keybindings]` | table | `{}` | Chord → action overrides applied on top of the preset; an override fully defines that action's chords. Editable via the settings overlay's Keybindings page. |
 
 ## Shells
 

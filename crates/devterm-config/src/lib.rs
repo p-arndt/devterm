@@ -101,23 +101,35 @@ impl Config {
     ///
     /// Starts from [`Config::keymap_preset`] (Default or Tmux), then applies the
     /// user overrides in [`Config::keybindings`]: each key is parsed as a
-    /// [`KeyChord`] and each value as an [`Action`]. A later binding for the same
-    /// chord replaces the earlier one. Entries that fail to parse are silently
-    /// skipped (the `log` crate is not a dependency of this crate).
+    /// [`KeyChord`] and each value as an [`Action`]. Entries that fail to parse are
+    /// silently skipped (the `log` crate is not a dependency of this crate).
+    ///
+    /// A user override is authoritative for both the chord and the action it names:
+    /// - the chord it binds takes precedence over any preset use of that chord, and
+    /// - the action it binds is defined *entirely* by the user's entries — the preset
+    ///   binding for that action is dropped, so rebinding an action to a new chord
+    ///   *moves* it rather than adding a second chord. To give an action several
+    ///   chords, list each of them.
     pub fn resolve_keybindings(&self) -> Vec<(KeyChord, Action)> {
-        let mut bindings = self.keymap_preset.bindings();
+        let user: Vec<(KeyChord, Action)> = self
+            .keybindings
+            .iter()
+            .filter_map(|(chord_str, action_str)| {
+                Some((chord_str.parse().ok()?, action_str.parse().ok()?))
+            })
+            .collect();
 
-        for (chord_str, action_str) in &self.keybindings {
-            if let Ok(chord) = chord_str.parse::<KeyChord>()
-                && let Ok(action) = action_str.parse::<Action>()
-            {
-                match bindings.iter_mut().find(|(c, _)| *c == chord) {
-                    Some(existing) => existing.1 = action,
-                    None => bindings.push((chord, action)),
-                }
+        let mut bindings: Vec<(KeyChord, Action)> = Vec::new();
+        for (chord, action) in self.keymap_preset.bindings() {
+            // Drop a preset binding when the user redefines that action (their entries
+            // fully specify its chords) or claims that chord for something else.
+            let action_rebound = user.iter().any(|(_, a)| *a == action);
+            let chord_claimed = user.iter().any(|(c, _)| *c == chord);
+            if !action_rebound && !chord_claimed {
+                bindings.push((chord, action));
             }
         }
-
+        bindings.extend(user);
         bindings
     }
 
@@ -260,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_keybindings_adds_new_chord() {
+    fn resolve_keybindings_binds_new_chord() {
         let mut config = Config::default();
         config
             .keybindings
@@ -272,6 +284,45 @@ mod tests {
                 .iter()
                 .any(|(c, a)| *c == chord && *a == Action::Paste)
         );
+    }
+
+    #[test]
+    fn resolve_keybindings_rebind_moves_action() {
+        // Rebinding an action to a new chord moves it: the preset chord stops working
+        // and the action ends up bound only to the new chord.
+        let mut config = Config::default();
+        config
+            .keybindings
+            .insert("logo+f1".to_owned(), "paste".to_owned());
+        let bindings = config.resolve_keybindings();
+
+        let old: KeyChord = "ctrl+shift+v".parse().unwrap(); // default Paste chord
+        assert!(
+            !bindings.iter().any(|(c, _)| *c == old),
+            "the preset Paste chord should be gone after a rebind"
+        );
+        // Paste is bound exactly once, to the new chord.
+        let paste_chords: Vec<_> = bindings
+            .iter()
+            .filter(|(_, a)| *a == Action::Paste)
+            .collect();
+        assert_eq!(paste_chords.len(), 1);
+        assert_eq!(paste_chords[0].0, "logo+f1".parse().unwrap());
+    }
+
+    #[test]
+    fn resolve_keybindings_multiple_chords_per_action() {
+        // Listing several chords for one action keeps them all.
+        let mut config = Config::default();
+        config
+            .keybindings
+            .insert("logo+f1".to_owned(), "paste".to_owned());
+        config
+            .keybindings
+            .insert("logo+f2".to_owned(), "paste".to_owned());
+        let bindings = config.resolve_keybindings();
+        let count = bindings.iter().filter(|(_, a)| *a == Action::Paste).count();
+        assert_eq!(count, 2);
     }
 
     #[test]
