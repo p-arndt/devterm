@@ -8,8 +8,21 @@ use crate::gpu::{BgInstance, GlyphInstance};
 use crate::{PaneView, Renderer, push_frame};
 
 impl Renderer {
-    /// Render one frame of all panes.
-    pub fn render(&mut self, panes: &[PaneView]) -> Result<(), wgpu::SurfaceError> {
+    /// Render one frame: the tiled layout `panes`, then an optional floating `overlay`
+    /// drawn on top.
+    ///
+    /// The renderer draws all backgrounds before all glyphs, so a naive single-layer pass
+    /// would let the base panes' *text* bleed over a pane stacked on top of them. To make
+    /// the overlay opaque it is drawn as a **second layer**: the base layer's background and
+    /// glyph instances are drawn first, then the overlay's own background quad (which
+    /// occludes the base text beneath it) and finally the overlay's glyphs. The two layers
+    /// share the instance buffers; each layer's draw selects its slice via a vertex-buffer
+    /// byte offset (so `first_instance` stays 0 and the path is portable across backends).
+    pub fn render(
+        &mut self,
+        panes: &[PaneView],
+        overlay: Option<&PaneView>,
+    ) -> Result<(), wgpu::SurfaceError> {
         let frame = self.surface.get_current_texture()?;
         let view = frame
             .texture
@@ -21,21 +34,27 @@ impl Renderer {
         let mut bg: Vec<BgInstance> = Vec::new();
         let mut glyphs: Vec<GlyphInstance> = Vec::new();
 
+        // --- base layer: the tiled layout panes ---
         for pane in panes {
             self.build_pane(pane, surface_w, surface_h, &mut bg, &mut glyphs);
         }
-
         // Pane separators + focus highlight, appended last so they blend over the
         // per-pane content. The glyph pass runs after this, so text at the very edge
         // still draws on top of the thin border and stays legible.
         self.build_borders(panes, surface_w, surface_h, &mut bg);
+        let base_bg = bg.len();
+        let base_glyphs = glyphs.len();
 
-        let bg_bytes = bytemuck::cast_slice(&bg);
-        let glyph_bytes = bytemuck::cast_slice(&glyphs);
+        // --- overlay layer: the floating terminal, drawn opaquely over the base ---
+        if let Some(overlay) = overlay {
+            self.build_pane(overlay, surface_w, surface_h, &mut bg, &mut glyphs);
+            self.build_borders(std::slice::from_ref(overlay), surface_w, surface_h, &mut bg);
+        }
+
         self.bg_instances
-            .upload(&self.device, &self.queue, bg_bytes);
+            .upload(&self.device, &self.queue, bytemuck::cast_slice(&bg));
         self.glyph_instances
-            .upload(&self.device, &self.queue, glyph_bytes);
+            .upload(&self.device, &self.queue, bytemuck::cast_slice(&glyphs));
 
         let mut encoder = self
             .device
@@ -59,25 +78,47 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            if !bg.is_empty() {
-                pass.set_pipeline(&self.bg_pipeline);
-                pass.set_bind_group(0, &self.viewport_bind_group, &[]);
-                pass.set_vertex_buffer(0, self.bg_instances.buffer.slice(..));
-                pass.draw(0..4, 0..bg.len() as u32);
-            }
-
-            if !glyphs.is_empty() {
-                pass.set_pipeline(&self.glyph_pipeline);
-                pass.set_bind_group(0, &self.viewport_bind_group, &[]);
-                pass.set_bind_group(1, &self.atlas_bind_group, &[]);
-                pass.set_vertex_buffer(0, self.glyph_instances.buffer.slice(..));
-                pass.draw(0..4, 0..glyphs.len() as u32);
-            }
+            // Layer draw order: base bg, base glyphs, overlay bg, overlay glyphs. Drawing the
+            // overlay's glyphs only after its own opaque background quad is what occludes the
+            // base text underneath it.
+            self.draw_bg(&mut pass, 0, base_bg);
+            self.draw_glyphs(&mut pass, 0, base_glyphs);
+            self.draw_bg(&mut pass, base_bg, bg.len());
+            self.draw_glyphs(&mut pass, base_glyphs, glyphs.len());
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
         Ok(())
+    }
+
+    /// Draw background instances `[start, end)` from the shared buffer. The instance slice is
+    /// selected by a vertex-buffer byte offset so `first_instance` stays 0.
+    fn draw_bg(&self, pass: &mut wgpu::RenderPass<'_>, start: usize, end: usize) {
+        if end <= start {
+            return;
+        }
+        let stride = std::mem::size_of::<BgInstance>() as u64;
+        pass.set_pipeline(&self.bg_pipeline);
+        pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+        pass.set_vertex_buffer(0, self.bg_instances.buffer.slice(start as u64 * stride..));
+        pass.draw(0..4, 0..(end - start) as u32);
+    }
+
+    /// Draw glyph instances `[start, end)` from the shared buffer (see [`draw_bg`]).
+    fn draw_glyphs(&self, pass: &mut wgpu::RenderPass<'_>, start: usize, end: usize) {
+        if end <= start {
+            return;
+        }
+        let stride = std::mem::size_of::<GlyphInstance>() as u64;
+        pass.set_pipeline(&self.glyph_pipeline);
+        pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+        pass.set_bind_group(1, &self.atlas_bind_group, &[]);
+        pass.set_vertex_buffer(
+            0,
+            self.glyph_instances.buffer.slice(start as u64 * stride..),
+        );
+        pass.draw(0..4, 0..(end - start) as u32);
     }
 
     /// Turn one pane's snapshot into background and glyph instances.

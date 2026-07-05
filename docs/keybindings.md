@@ -21,6 +21,7 @@ to a DevTerm action are passed straight through to the shell in the focused pane
 | `Shift+PageUp` | Scroll page up | One screenful, minus a row. |
 | `Shift+PageDown` | Scroll page down | |
 | `Ctrl+,` | Open config | Opens `config.toml` in your editor in a new stacked pane. |
+| `Ctrl+Shift+T` | Toggle floating terminal | Shows/hides a centered "scratch" terminal floating over the layout for quick one-off commands. |
 | `Ctrl+Shift+Q` | Quit | Closes DevTerm. |
 
 > **Resize follows the arrow.** `Alt+Shift+arrow` slides the focused pane's border in the
@@ -60,6 +61,7 @@ keymap_preset = "tmux"
 | `Ctrl+Alt+K` / `Ctrl+Alt+J` | Scroll line up / down |
 | `Ctrl+Alt+PageUp` / `Ctrl+Alt+PageDown` | Scroll page up / down |
 | `Ctrl+Alt+,` | Open config |
+| `Ctrl+Alt+T` | Toggle floating terminal |
 | `Ctrl+Alt+Q` | Quit |
 
 ## Mouse
@@ -85,7 +87,7 @@ keymap_preset = "default"
 
 [keybindings]
 "ctrl+shift+d"   = "split-horizontal"   # add an extra split key
-"ctrl+shift+t"   = "split-vertical"
+"ctrl+shift+g"   = "split-vertical"
 "alt+w"          = "close-pane"          # rebind close
 ```
 
@@ -114,7 +116,14 @@ Use these exact strings as the value in `[keybindings]`:
 `resize-left`, `resize-right`, `resize-up`, `resize-down`,
 `copy`, `paste`,
 `scroll-line-up`, `scroll-line-down`, `scroll-page-up`, `scroll-page-down`,
-`open-config`, `quit`.
+`open-config`, `toggle-floating-terminal`, `quit`.
+
+The floating terminal (`toggle-floating-terminal`) is a centered "scratch" terminal that
+floats over the layout for quick one-off commands. The first toggle spawns it (running the
+configured shell); later toggles hide/show it while keeping the process and its scrollback
+alive. While it is shown it captures typing, copy/paste and scrolling; `close-pane`
+dismisses it (killing its child), and typing `exit` closes it too. Layout actions
+(split/focus/resize) are ignored while it is up.
 
 The editor used by `open-config` is `$VISUAL`, then `$EDITOR`, falling back to `vi`
 (`notepad` on Windows). It opens `config.toml` in a new pane, so a terminal editor
