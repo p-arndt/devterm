@@ -160,17 +160,17 @@ jobs:
 
       - name: Stage artifact (Windows)
         if: runner.os == 'Windows'
-        shell: bash
+        shell: pwsh
         env:
           V: ${{ needs.prepare.outputs.version }}
           TARGET: ${{ matrix.target }}
         run: |
-          NAME="devterm-${V}-${TARGET}"
-          mkdir -p "dist/$NAME"
-          cp "target/${TARGET}/release/devterm.exe" "dist/$NAME/"
-          cp README.md LICENSE* "dist/$NAME/" 2>/dev/null || true
-          powershell -Command "Compress-Archive -Path 'dist/$env:NAME/*' -DestinationPath 'dist/$env:NAME.zip'"
-          ls -l dist
+          $NAME = "devterm-$env:V-$env:TARGET"
+          New-Item -ItemType Directory -Force -Path "dist/$NAME" | Out-Null
+          Copy-Item "target/$env:TARGET/release/devterm.exe" "dist/$NAME/"
+          Copy-Item README.md, LICENSE* "dist/$NAME/" -ErrorAction SilentlyContinue
+          Compress-Archive -Path "dist/$NAME/*" -DestinationPath "dist/$NAME.zip" -Force
+          Get-ChildItem dist
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
