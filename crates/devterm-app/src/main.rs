@@ -11,6 +11,7 @@
 
 mod app;
 mod keymap;
+mod update;
 
 use anyhow::Result;
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -36,6 +37,11 @@ fn main() -> Result<()> {
     let proxy = event_loop.create_proxy();
     // Hot-reload watcher: kept alive for the program's lifetime (dropping it stops watching).
     let _config_watcher = spawn_config_watcher(proxy.clone());
+
+    // Clear any binary left behind by a prior self-update, then check for a newer release in
+    // the background (posts `UserEvent::UpdateAvailable` if one is found).
+    update::cleanup_leftovers();
+    update::spawn_check(proxy.clone());
 
     let mut app = App::new(config, proxy);
     event_loop.run_app(&mut app)?;

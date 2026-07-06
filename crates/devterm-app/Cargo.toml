@@ -34,6 +34,15 @@ notify.workspace = true
 # Decodes the embedded PNG into RGBA for the winit window/taskbar icon at runtime.
 # PNG-only to avoid pulling image's heavy default codec set (it's already in the tree).
 image = { version = "0.25", default-features = false, features = ["png"] }
+# Update check + self-update: query GitHub Releases (ureq = blocking HTTP + TLS) and
+# parse the JSON. serde derive comes from the workspace serde.
+ureq = "2"
+serde = { workspace = true }
+serde_json = "1"
+
+# Native "update available — install now?" dialog via MessageBoxW (no extra UI crate).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_UI_WindowsAndMessaging"] }
 # egui chrome (tabs, palette) lands in M1/M2:
 # egui.workspace = true
 # egui-wgpu.workspace = true

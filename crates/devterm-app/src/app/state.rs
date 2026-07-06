@@ -14,12 +14,18 @@ use devterm_term::Palette;
 use super::pane::Pane;
 
 /// Event delivered to the winit loop from outside `window_event`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum UserEvent {
     /// A PTY reader produced output (or exited); request a redraw.
     Wake,
     /// `config.toml` changed on disk; reload it.
     ReloadConfig,
+    /// A background check found a newer published release (carries the version,
+    /// e.g. `"0.2.0"`). Triggers the "new version available" notice + prompt.
+    UpdateAvailable(String),
+    /// A self-update attempt finished: `Ok(version)` installed successfully (restart
+    /// to run it), `Err(message)` failed with a user-facing reason.
+    UpdateResult(Result<String, String>),
 }
 
 /// An in-progress mouse drag of a split divider (gutter).

@@ -55,6 +55,9 @@ pub struct App {
     proxy: EventLoopProxy<UserEvent>,
     modifiers: ModifiersState,
     state: Option<AppState>,
+    /// An "update available" notice that arrived before the window existed; applied once the
+    /// window is created (in `resumed`).
+    pending_update: Option<String>,
 }
 
 impl App {
@@ -65,7 +68,21 @@ impl App {
             proxy,
             modifiers: ModifiersState::empty(),
             state: None,
+            pending_update: None,
         }
+    }
+
+    /// Surface a "new version available" notice: mark it in the window title and pop the
+    /// update prompt. If the window isn't up yet, stash it for `resumed` to apply.
+    fn show_update_available(&mut self, version: String) {
+        let Some(state) = self.state.as_ref() else {
+            self.pending_update = Some(version);
+            return;
+        };
+        state
+            .window
+            .set_title(&format!("DevTerm — update available ({version})"));
+        crate::update::prompt_update(&self.proxy, &version);
     }
 }
 
@@ -153,9 +170,14 @@ impl ApplicationHandler<UserEvent> for App {
             blink_visible: true,
             last_blink_toggle: now,
         });
+
+        // A background update check may have already fired before the window existed.
+        if let Some(version) = self.pending_update.take() {
+            self.show_update_available(version);
+        }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Wake => {
                 let blink = self.config.cursor.blink;
@@ -173,6 +195,16 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::ReloadConfig => self.reload_config(),
+            UserEvent::UpdateAvailable(version) => self.show_update_available(version),
+            UserEvent::UpdateResult(result) => {
+                if crate::update::prompt_restart(&result) {
+                    // Relaunch the (freshly swapped) binary, then exit this instance.
+                    if let Ok(exe) = std::env::current_exe() {
+                        let _ = std::process::Command::new(exe).spawn();
+                    }
+                    event_loop.exit();
+                }
+            }
         }
     }
 
