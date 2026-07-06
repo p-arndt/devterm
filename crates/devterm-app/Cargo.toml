@@ -11,6 +11,10 @@ repository.workspace = true
 name = "devterm"
 path = "src/main.rs"
 
+# Embeds the app icon + version metadata into devterm.exe on Windows (build.rs).
+[build-dependencies]
+winresource = "0.1"
+
 [dependencies]
 devterm-core.workspace = true
 devterm-pty.workspace = true
@@ -27,6 +31,9 @@ log.workspace = true
 # System clipboard (Copy/Paste) and config.toml hot-reload watcher (M1).
 arboard.workspace = true
 notify.workspace = true
+# Decodes the embedded PNG into RGBA for the winit window/taskbar icon at runtime.
+# PNG-only to avoid pulling image's heavy default codec set (it's already in the tree).
+image = { version = "0.25", default-features = false, features = ["png"] }
 # egui chrome (tabs, palette) lands in M1/M2:
 # egui.workspace = true
 # egui-wgpu.workspace = true

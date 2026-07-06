@@ -4,6 +4,11 @@
 //! tree, config-driven keybindings/theme/shell, selection + clipboard, and hot-reload of
 //! `config.toml`. Wires PTY output through the terminal model into the wgpu renderer.
 
+// Ship as a pure GUI app on Windows: no console window pops up on launch (behaves like
+// Windows Terminal / VS Code). Kept only for release builds so debug runs still get a
+// console for `env_logger` output.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod app;
 mod keymap;
 

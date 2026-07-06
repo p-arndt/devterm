@@ -172,6 +172,27 @@ jobs:
           Compress-Archive -Path "dist/$NAME/*" -DestinationPath "dist/$NAME.zip" -Force
           Get-ChildItem dist
 
+      # Build the friendly "Next, Next, Install" wizard (Start Menu shortcut,
+      # optional desktop icon + Add-to-PATH, uninstaller). Inno Setup is preinstalled
+      # on windows-latest; install it as a fallback in case the image ever drops it.
+      - name: Build Windows installer (Inno Setup)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          V: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          $ver = $env:V -replace '^v', ''
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+          }
+          $src = Join-Path $PWD "target\$env:TARGET\release"
+          & $iscc "/DAppVersion=$ver" "/DSourceDir=$src" installer\devterm.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+          Copy-Item installer\output\*.exe dist\
+          Get-ChildItem dist
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -179,6 +200,7 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.exe
 
   # ---------------------------------------------------------------------------
   # Collect every platform's archive + the notes, then cut the GitHub Release.
@@ -196,7 +218,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist-release
-          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) \
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.exe' \) \
             -exec cp {} dist-release/ \;
           ls -l dist-release
 

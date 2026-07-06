@@ -15,3 +15,6 @@ Thumbs.db
 # local, unversioned config / secrets
 /.env
 /*.local.toml
+
+# Installer build output (Inno Setup)
+/installer/output/

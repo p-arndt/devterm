@@ -6,7 +6,34 @@
 
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event_loop::ActiveEventLoop;
-use winit::window::{Window, WindowAttributes};
+use winit::window::{Icon, Window, WindowAttributes};
+
+/// The app icon, baked into the binary so it's always available at runtime.
+/// Regenerated (alongside `devterm.ico`) by `scripts/make-icon.ps1`.
+const ICON_PNG: &[u8] = include_bytes!("../../../../assets/devterm-256.png");
+
+/// Decode the embedded PNG into a winit [`Icon`] for the title bar / taskbar.
+///
+/// Winit paints a default icon unless given one; the icon embedded in the `.exe`
+/// only covers Explorer/Start Menu/shortcuts, not the live window. Returns `None`
+/// (and logs) on the practically-impossible decode failure so startup still proceeds.
+fn window_icon() -> Option<Icon> {
+    let image = match image::load_from_memory(ICON_PNG) {
+        Ok(image) => image.into_rgba8(),
+        Err(err) => {
+            log::warn!("failed to decode window icon: {err}");
+            return None;
+        }
+    };
+    let (width, height) = image.dimensions();
+    match Icon::from_rgba(image.into_raw(), width, height) {
+        Ok(icon) => Some(icon),
+        Err(err) => {
+            log::warn!("failed to build window icon: {err}");
+            None
+        }
+    }
+}
 
 /// Fraction of the monitor's width the window should occupy.
 const WIDTH_FRACTION: f64 = 0.5;
@@ -18,7 +45,9 @@ const MIN_SIZE: PhysicalSize<u32> = PhysicalSize::new(800, 600);
 /// Build the window attributes for the app's window: titled and, when a monitor is
 /// available, sized/centered per [`WIDTH_FRACTION`] and [`HEIGHT_FRACTION`].
 pub fn initial_attributes(event_loop: &ActiveEventLoop, title: &str) -> WindowAttributes {
-    let attributes = Window::default_attributes().with_title(title);
+    let attributes = Window::default_attributes()
+        .with_title(title)
+        .with_window_icon(window_icon());
 
     let Some(monitor) = event_loop
         .primary_monitor()
