@@ -12,7 +12,7 @@
 //! project's own GitHub release assets over https.
 
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -39,6 +39,7 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 /// Cap on the GitHub JSON response (a release payload is a few KB).
 const MAX_JSON: u64 = 2 << 20; // 2 MiB
 /// Cap on a downloaded binary, so a corrupt/hostile response can't exhaust memory.
+#[cfg(all(windows, target_arch = "x86_64"))]
 const MAX_BINARY: u64 = 256 << 20; // 256 MiB
 
 /// The release asset name carrying the standalone Windows binary, matching what
@@ -53,10 +54,13 @@ const ASSET_NAME: &str = "devterm-x86_64-pc-windows-msvc.exe";
 #[derive(Deserialize)]
 struct Release {
     tag_name: String,
+    // Only the Windows self-update path downloads assets; elsewhere the field is unused.
+    #[cfg(all(windows, target_arch = "x86_64"))]
     #[serde(default)]
     assets: Vec<Asset>,
 }
 
+#[cfg(all(windows, target_arch = "x86_64"))]
 #[derive(Deserialize)]
 struct Asset {
     name: String,
@@ -280,7 +284,9 @@ fn install(_latest: &str) -> Result<(), String> {
     replace_executable(&exe, &bin)
 }
 
-#[cfg(not(all(windows, target_arch = "x86_64")))]
+// `install` is only ever called from `prompt_update`'s Windows branch, so it need only
+// exist on Windows. This fallback covers non-x86_64 Windows (e.g. arm64).
+#[cfg(all(windows, not(target_arch = "x86_64")))]
 fn install(_latest: &str) -> Result<(), String> {
     Err("self-update is only supported on 64-bit Windows".into())
 }
@@ -306,7 +312,7 @@ fn download(url: &str) -> Result<Vec<u8>, String> {
 /// overwritten but *can* be renamed, so the current binary is moved to `devterm.old`
 /// (cleaned up on the next launch) and the new one takes its place.
 #[cfg(all(windows, target_arch = "x86_64"))]
-fn replace_executable(exe: &Path, new_bin: &[u8]) -> Result<(), String> {
+fn replace_executable(exe: &std::path::Path, new_bin: &[u8]) -> Result<(), String> {
     let dir = exe
         .parent()
         .ok_or_else(|| "cannot resolve the install directory".to_string())?;

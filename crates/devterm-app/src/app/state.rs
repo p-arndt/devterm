@@ -24,7 +24,9 @@ pub enum UserEvent {
     /// e.g. `"0.2.0"`). Triggers the "new version available" notice + prompt.
     UpdateAvailable(String),
     /// A self-update attempt finished: `Ok(version)` installed successfully (restart
-    /// to run it), `Err(message)` failed with a user-facing reason.
+    /// to run it), `Err(message)` failed with a user-facing reason. Only ever
+    /// constructed on Windows (where self-update runs), but matched on all platforms.
+    #[cfg_attr(not(windows), allow(dead_code))]
     UpdateResult(Result<String, String>),
 }
 

@@ -34,6 +34,8 @@ allow = [
     "MPL-2.0",
     "CC0-1.0",
     "BSL-1.0",
+    # Mozilla CA root set embedded by webpki-roots (via ureq, used by the updater).
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 
