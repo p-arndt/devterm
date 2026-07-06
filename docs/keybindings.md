@@ -11,7 +11,10 @@ to a DevTerm action are passed straight through to the shell in the focused pane
 |---|---|---|
 | `Ctrl+Shift+H` | Split horizontal | New pane appears **side by side** (to the right); focus moves to it. |
 | `Ctrl+Shift+S` | Split vertical | New pane appears **stacked** (below); focus moves to it. |
-| `Ctrl+Shift+W` | Close pane | Closing the **last** pane quits DevTerm. |
+| `Ctrl+Shift+W` | Close pane | Closing a tab's **last** pane closes the tab; closing the last tab quits DevTerm. |
+| `Ctrl+Shift+N` | New tab | Opens a fresh shell in a new tab and switches to it. |
+| `Ctrl+Shift+X` | Close tab | Drops all of the tab's panes; closing the **last** tab quits DevTerm. |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab | Cycles through tabs, wrapping at the ends. |
 | `Ctrl+Shift+←/→/↑/↓` | Move focus | Focus the geometric neighbor in that direction. |
 | `Alt+Shift+←/→/↑/↓` | Resize focused pane | Moves its border toward the arrow: grow into a neighbor, shrink at the window edge (~10% per press). |
 | `Ctrl+Shift+C` | Copy | Copies the current selection to the system clipboard. |
@@ -56,6 +59,9 @@ keymap_preset = "tmux"
 | `Ctrl+Alt+%` | Split horizontal (side by side) |
 | `Ctrl+Alt+"` | Split vertical (stacked) |
 | `Ctrl+Alt+X` | Close pane |
+| `Ctrl+Alt+N` | New tab (tmux `c` is taken by Copy here) |
+| `Ctrl+Alt+&` | Close tab |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab |
 | `Ctrl+Shift+←/→/↑/↓` | Move focus |
 | `Alt+Shift+←/→/↑/↓` | Resize focused pane (border follows the arrow) |
 | `Ctrl+Alt+C` / `Ctrl+Alt+V` | Copy / Paste |
@@ -70,6 +76,7 @@ keymap_preset = "tmux"
 
 | Gesture | Effect |
 |---|---|
+| **Left click on the tab bar** | Switch to the clicked tab; the `+` button opens a new one. |
 | **Left click** | Focus the pane under the pointer. |
 | **Left click + drag** (inside a pane) | Select text in that pane (highlighted as inverse video). |
 | **Drag a split border** | Resize the panes on either side (the cursor turns into a resize arrow on hover). |
@@ -114,11 +121,18 @@ Examples: `ctrl+shift+h`, `alt+left`, `ctrl+shift+pageup`, `shift+f5`.
 Use these exact strings as the value in `[keybindings]`:
 
 `split-horizontal`, `split-vertical`, `close-pane`,
+`new-tab`, `close-tab`, `next-tab`, `prev-tab`,
 `focus-left`, `focus-right`, `focus-up`, `focus-down`,
 `resize-left`, `resize-right`, `resize-up`, `resize-down`,
 `copy`, `paste`,
 `scroll-line-up`, `scroll-line-down`, `scroll-page-up`, `scroll-page-down`,
 `open-settings`, `open-config`, `toggle-floating-terminal`, `quit`.
+
+Tabs (`new-tab`, `close-tab`, `next-tab`, `prev-tab`) each hold their own pane layout;
+the always-visible bar across the top of the window shows each tab's number plus the
+title its focused pane reports (else "Tab N"), clickable to switch, with a trailing `+`
+button that opens a new tab. Background tabs keep their shells running. Tab actions are
+ignored while the floating terminal is up.
 
 The floating terminal (`toggle-floating-terminal`) is a centered "scratch" terminal that
 floats over the layout for quick one-off commands. The first toggle spawns it (running the

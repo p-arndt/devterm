@@ -41,6 +41,12 @@ pub fn default_keymap() -> Vec<(KeyChord, Action)> {
         (chord("ctrl+shift+h"), Action::SplitHorizontal),
         (chord("ctrl+shift+s"), Action::SplitVertical),
         (chord("ctrl+shift+w"), Action::ClosePane),
+        // Tabs. ctrl+shift+t is taken by the floating terminal, so "new tab" uses
+        // ctrl+shift+n; ctrl+tab / ctrl+shift+tab cycle like a browser.
+        (chord("ctrl+shift+n"), Action::NewTab),
+        (chord("ctrl+shift+x"), Action::CloseTab),
+        (chord("ctrl+tab"), Action::NextTab),
+        (chord("ctrl+shift+tab"), Action::PrevTab),
         // Focus uses ctrl+shift+arrows; ctrl+alt+arrows is reserved for workspace
         // switching on GNOME/Ubuntu, so it is deliberately avoided.
         (chord("ctrl+shift+left"), Action::FocusLeft),
@@ -79,6 +85,12 @@ pub fn tmux_preset() -> Vec<(KeyChord, Action)> {
         (chord("ctrl+alt+\""), Action::SplitVertical),
         (chord("ctrl+alt+%"), Action::SplitHorizontal),
         (chord("ctrl+alt+x"), Action::ClosePane),
+        // tmux windows ≈ tabs: prefix+c/&/n/p. `c` is taken by Copy here, so "new tab"
+        // falls back to ctrl+alt+n and cycling uses the universal ctrl+tab chords.
+        (chord("ctrl+alt+n"), Action::NewTab),
+        (chord("ctrl+alt+&"), Action::CloseTab),
+        (chord("ctrl+tab"), Action::NextTab),
+        (chord("ctrl+shift+tab"), Action::PrevTab),
         // tmux pane navigation: prefix + arrows. Approximated with ctrl+shift+arrow —
         // ctrl+alt+arrow is reserved for workspace switching on GNOME/Ubuntu.
         (chord("ctrl+shift+left"), Action::FocusLeft),

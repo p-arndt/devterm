@@ -131,7 +131,7 @@ M0 beweist die Kernthese. Alles danach ist Ausbau.
 
 ### M2 — v0.2 "projektorientiert" (Ziel: +4–6 Wochen)
 
-- [ ] Tabs / Workspaces
+- [x] Tabs / Workspaces (Tab-Leiste oben, `ctrl+shift+n` / `ctrl+tab` / `ctrl+shift+tab` / `ctrl+shift+x`, klickbar; Hintergrund-Tabs laufen weiter)
 - [ ] Session-Persistenz: Layout + CWDs + Commands speichern & wiederherstellen
 - [ ] Projekt-Profile `devterm.yml` im Repo-Root:
   ```yaml

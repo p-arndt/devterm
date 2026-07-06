@@ -1,16 +1,17 @@
 //! The winit application: wires PTY <-> terminal model <-> renderer.
 //!
-//! Each pane is a `{ Pty, Term }` pair keyed by a [`PaneId`]; the window owns a
-//! [`LayoutTree`] from `devterm-core`. Splits, focus moves, resizes and closes are layout
-//! operations that re-derive every pane's own cols/rows from its pixel rectangle. Config
-//! drives the keymap, theme palette and shell, and a background file watcher hot-reloads
-//! `config.toml`.
+//! Each pane is a `{ Pty, Term }` pair keyed by a [`PaneId`]; the window owns a list of
+//! tabs, each with its own [`LayoutTree`] from `devterm-core` over its own panes. Splits,
+//! focus moves, resizes and closes are layout operations on the active tab that re-derive
+//! every pane's own cols/rows from its pixel rectangle; background tabs keep their shells
+//! running. Config drives the keymap, theme palette and shell, and a background file
+//! watcher hot-reloads `config.toml`.
 //!
 //! This module owns the [`App`] handler and the winit event loop; the mechanics are split
 //! across submodules: [`state`] (window-scoped state), [`pane`] (a pane and its child),
-//! [`view`] (pixel geometry, rendering, selection), [`actions`] (bound-action dispatch and
-//! config reload), [`input`] (winit->config mapping), and [`config_watch`] (the hot-reload
-//! watcher).
+//! [`view`] (pixel geometry, rendering, selection), [`tabbar`] (the tab strip), [`actions`]
+//! (bound-action dispatch and config reload), [`input`] (winit->config mapping), and
+//! [`config_watch`] (the hot-reload watcher).
 //!
 //! [`PaneId`]: devterm_core::PaneId
 //! [`LayoutTree`]: devterm_core::LayoutTree
@@ -22,6 +23,7 @@ mod pane;
 mod present;
 mod settings;
 mod state;
+mod tabbar;
 mod view;
 mod window;
 
@@ -44,7 +46,7 @@ use crate::keymap::keymap;
 use input::{build_keymap, chord_from_event, palette_from_theme};
 use pane::build_pane;
 use present::{BLINK_INTERVAL, MAX_DEFER, SETTLE_WINDOW};
-use state::AppState;
+use state::{AppState, Tab};
 
 pub use config_watch::spawn_config_watcher;
 pub use state::UserEvent;
@@ -142,6 +144,11 @@ impl ApplicationHandler<UserEvent> for App {
 
         let mut panes = HashMap::new();
         panes.insert(pane_id, pane);
+        let tab = Tab {
+            id: ids.next_tab(),
+            layout,
+            panes,
+        };
 
         window.request_redraw();
 
@@ -149,8 +156,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.state = Some(AppState {
             window,
             renderer,
-            layout,
-            panes,
+            tabs: vec![tab],
+            active_tab: 0,
             overlay: None,
             overlay_visible: false,
             settings: None,
@@ -290,11 +297,26 @@ impl ApplicationHandler<UserEvent> for App {
                 if button == MouseButton::Left {
                     match button_state {
                         ElementState::Pressed => {
-                            // A press on a divider starts a resize drag instead of a
-                            // selection; a press inside a pane selects text as before.
-                            if !Self::begin_gutter_drag(state) {
-                                state.mouse_down = true;
-                                Self::begin_selection(state);
+                            // A press on the tab bar switches/opens/closes tabs; a press
+                            // on a divider starts a resize drag instead of a selection; a
+                            // press inside a pane selects text as before.
+                            match Self::tab_bar_click(state) {
+                                Some(tabbar::BarClick::Tab(index)) => {
+                                    Self::activate_tab(state, index);
+                                }
+                                Some(tabbar::BarClick::Close(index)) => {
+                                    Self::close_tab_at(state, index, event_loop);
+                                }
+                                Some(tabbar::BarClick::NewTab) => {
+                                    Self::new_tab(state, &self.config, &self.proxy);
+                                }
+                                Some(tabbar::BarClick::Empty) => {}
+                                None => {
+                                    if !Self::begin_gutter_drag(state) {
+                                        state.mouse_down = true;
+                                        Self::begin_selection(state);
+                                    }
+                                }
                             }
                         }
                         ElementState::Released => {
@@ -302,6 +324,13 @@ impl ApplicationHandler<UserEvent> for App {
                             state.drag = None;
                             Self::update_hover_cursor(state);
                         }
+                    }
+                } else if button == MouseButton::Middle && button_state == ElementState::Pressed {
+                    // Middle click anywhere on a tab's block closes that tab.
+                    if let Some(tabbar::BarClick::Tab(index) | tabbar::BarClick::Close(index)) =
+                        Self::tab_bar_click(state)
+                    {
+                        Self::close_tab_at(state, index, event_loop);
                     }
                 }
             }
@@ -324,8 +353,8 @@ impl ApplicationHandler<UserEvent> for App {
                     } else {
                         // Target the pane under the pointer, falling back to the focused one.
                         let target = Self::pane_at(state, state.pointer)
-                            .unwrap_or_else(|| state.layout.focused());
-                        if let Some(pane) = state.panes.get_mut(&target) {
+                            .unwrap_or_else(|| state.tab().layout.focused());
+                        if let Some(pane) = state.tab_mut().panes.get_mut(&target) {
                             pane.term.scroll_display(lines);
                         }
                     }

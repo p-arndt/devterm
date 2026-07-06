@@ -7,11 +7,22 @@ use std::time::Instant;
 use winit::window::{CursorIcon, Window};
 
 use devterm_config::{Action, KeyChord};
-use devterm_core::{GutterId, IdGen, LayoutTree, PaneId, SplitDirection};
+use devterm_core::{GutterId, IdGen, LayoutTree, PaneId, SplitDirection, TabId};
 use devterm_render::Renderer;
 use devterm_term::Palette;
 
 use super::pane::Pane;
+
+/// One tab/workspace: its own layout tree over its own set of panes. Exactly one tab is
+/// active (visible, receiving input) at a time; the others keep their children running in
+/// the background. Dropping a tab drops its panes, whose `Pty` `Drop` kills the children.
+pub(super) struct Tab {
+    /// Stable identity (unused for lookups today; reserved for session persistence).
+    #[allow(dead_code)]
+    pub(super) id: TabId,
+    pub(super) layout: LayoutTree,
+    pub(super) panes: HashMap<PaneId, Pane>,
+}
 
 /// Event delivered to the winit loop from outside `window_event`.
 #[derive(Clone, Debug)]
@@ -45,8 +56,10 @@ pub(super) struct GutterDrag {
 pub(super) struct AppState {
     pub(super) window: Arc<Window>,
     pub(super) renderer: Renderer,
-    pub(super) layout: LayoutTree,
-    pub(super) panes: HashMap<PaneId, Pane>,
+    /// All tabs, in display order. Never empty (an empty window exits the app instead).
+    pub(super) tabs: Vec<Tab>,
+    /// Index into [`tabs`](Self::tabs) of the visible tab.
+    pub(super) active_tab: usize,
     /// A floating "scratch" terminal drawn centered on top of the layout, spawned lazily on
     /// the first toggle. It lives outside the [`LayoutTree`]; when `overlay_visible` it
     /// captures keyboard input, copy/paste and scrolling. Dropped when its child exits or it
@@ -91,4 +104,20 @@ pub(super) struct AppState {
     pub(super) blink_visible: bool,
     /// Instant of the last blink toggle (or last activity reset).
     pub(super) last_blink_toggle: Instant,
+}
+
+impl AppState {
+    /// The active (visible) tab.
+    ///
+    /// These borrow all of `self`; where the renderer must be borrowed alongside the
+    /// tab's panes, index `self.tabs[self.active_tab]` directly to split the borrow.
+    pub(super) fn tab(&self) -> &Tab {
+        &self.tabs[self.active_tab]
+    }
+
+    /// Mutable counterpart to [`tab`](Self::tab).
+    pub(super) fn tab_mut(&mut self) -> &mut Tab {
+        let active = self.active_tab;
+        &mut self.tabs[active]
+    }
 }

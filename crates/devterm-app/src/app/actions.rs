@@ -1,9 +1,10 @@
 //! Bound-action dispatch, the individual action handlers, and config hot-reload.
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use devterm_config::{Action, Config};
-use devterm_core::{Direction, LayoutError, SplitDirection};
+use devterm_core::{Direction, LayoutError, LayoutTree, SplitDirection};
 use devterm_pty::PtyCommandSpec;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 
@@ -11,7 +12,7 @@ use super::App;
 use super::input::{build_keymap, palette_from_theme, term_cursor_shape};
 use super::pane::{build_pane, build_pane_with_spec};
 use super::settings::{SettingsMenu, SettingsResponse};
-use super::state::{AppState, UserEvent};
+use super::state::{AppState, Tab, UserEvent};
 
 impl App {
     // --- actions --------------------------------------------------------------
@@ -26,13 +27,17 @@ impl App {
         event_loop: &ActiveEventLoop,
     ) {
         // While the floating terminal captures interaction, layout-structure actions
-        // (split/focus/resize) would silently mutate the hidden layout underneath it, so
-        // they are suppressed. Copy/paste/scroll and close are re-targeted at the overlay.
+        // (split/focus/resize/tabs) would silently mutate the hidden layout underneath it,
+        // so they are suppressed. Copy/paste/scroll and close are re-targeted at the overlay.
         if state.overlay_visible
             && matches!(
                 action,
                 Action::SplitHorizontal
                     | Action::SplitVertical
+                    | Action::NewTab
+                    | Action::CloseTab
+                    | Action::NextTab
+                    | Action::PrevTab
                     | Action::FocusLeft
                     | Action::FocusRight
                     | Action::FocusUp
@@ -56,6 +61,10 @@ impl App {
             // child); otherwise it closes the focused layout pane.
             Action::ClosePane if state.overlay_visible => Self::close_overlay(state),
             Action::ClosePane => Self::close_focused(state, event_loop),
+            Action::NewTab => Self::new_tab(state, config, proxy),
+            Action::CloseTab => Self::close_tab(state, event_loop),
+            Action::NextTab => Self::switch_tab(state, 1),
+            Action::PrevTab => Self::switch_tab(state, -1),
             Action::FocusLeft => Self::focus(state, Direction::Left),
             Action::FocusRight => Self::focus(state, Direction::Right),
             Action::FocusUp => Self::focus(state, Direction::Up),
@@ -190,8 +199,9 @@ impl App {
     /// Split the focused leaf in `direction`, insert `pane` into the new leaf, and re-layout.
     fn insert_split_pane(state: &mut AppState, direction: SplitDirection, pane: super::pane::Pane) {
         let id = state.ids.next_pane();
-        state.layout.split(direction, id);
-        state.panes.insert(id, pane);
+        let tab = state.tab_mut();
+        tab.layout.split(direction, id);
+        tab.panes.insert(id, pane);
         Self::resize_panes(state);
         state.force_present = true;
         state.window.request_redraw();
@@ -199,18 +209,92 @@ impl App {
 
     /// Close the focused pane, dropping it (its `Pty` `Drop` kills the child).
     fn close_focused(state: &mut AppState, event_loop: &ActiveEventLoop) {
-        let focused = state.layout.focused();
-        match state.layout.close(focused) {
+        let tab = state.tab_mut();
+        let focused = tab.layout.focused();
+        match tab.layout.close(focused) {
             Ok(()) => {
-                state.panes.remove(&focused);
+                tab.panes.remove(&focused);
                 Self::resize_panes(state);
                 state.force_present = true;
                 state.window.request_redraw();
             }
-            // Closing the last pane quits DevTerm (parity with closing the window).
-            Err(LayoutError::CannotCloseLastPane) => event_loop.exit(),
+            // Closing a tab's last pane closes the tab (and the last tab quits DevTerm,
+            // parity with closing the window).
+            Err(LayoutError::CannotCloseLastPane) => Self::close_tab(state, event_loop),
             Err(err) => log::warn!("close pane failed: {err}"),
         }
+    }
+
+    // --- tabs -------------------------------------------------------------------
+
+    /// Open a new tab with a single fresh shell pane right of the current tab, and switch
+    /// to it.
+    pub(super) fn new_tab(
+        state: &mut AppState,
+        config: &Config,
+        proxy: &EventLoopProxy<UserEvent>,
+    ) {
+        // A provisional grid; `resize_panes` immediately fixes it to the real layout area.
+        let (cols, rows) = Self::provisional_grid(state);
+        let pane = match build_pane(config, proxy, state.palette, cols, rows) {
+            Ok(pane) => pane,
+            Err(err) => {
+                log::error!("failed to spawn pane for new tab: {err}");
+                return;
+            }
+        };
+        let pane_id = state.ids.next_pane();
+        let mut panes = HashMap::new();
+        panes.insert(pane_id, pane);
+        let tab = Tab {
+            id: state.ids.next_tab(),
+            layout: LayoutTree::new(pane_id),
+            panes,
+        };
+        state.tabs.insert(state.active_tab + 1, tab);
+        Self::activate_tab(state, state.active_tab + 1);
+    }
+
+    /// Close the current tab, dropping all its panes (each `Pty` `Drop` kills its child).
+    /// Closing the last tab quits DevTerm.
+    fn close_tab(state: &mut AppState, event_loop: &ActiveEventLoop) {
+        let active = state.active_tab;
+        Self::close_tab_at(state, active, event_loop);
+    }
+
+    /// Close tab `index` (the bar's `×` button / middle click can target any tab, not
+    /// just the active one). Closing the last tab quits DevTerm.
+    pub(super) fn close_tab_at(state: &mut AppState, index: usize, event_loop: &ActiveEventLoop) {
+        if state.tabs.len() == 1 {
+            event_loop.exit();
+            return;
+        }
+        state.tabs.remove(index);
+        let next = if state.active_tab > index {
+            state.active_tab - 1
+        } else {
+            state.active_tab.min(state.tabs.len() - 1)
+        };
+        Self::activate_tab(state, next);
+    }
+
+    /// Switch to the neighbouring tab in `delta` direction, wrapping at the ends.
+    fn switch_tab(state: &mut AppState, delta: isize) {
+        let n = state.tabs.len() as isize;
+        if n <= 1 {
+            return;
+        }
+        let next = (state.active_tab as isize + delta).rem_euclid(n) as usize;
+        Self::activate_tab(state, next);
+    }
+
+    /// Make tab `index` the active one and bring its panes up to date with the current
+    /// window size and cell metrics (both may have changed while it was in the background).
+    pub(super) fn activate_tab(state: &mut AppState, index: usize) {
+        state.active_tab = index;
+        Self::resize_panes(state);
+        state.force_present = true;
+        state.window.request_redraw();
     }
 
     /// Toggle the floating "scratch" terminal. The first show spawns its child (the config
@@ -246,7 +330,7 @@ impl App {
     }
 
     fn focus(state: &mut AppState, dir: Direction) {
-        if state.layout.move_focus(dir) {
+        if state.tab_mut().layout.move_focus(dir) {
             // Focus changes no terminal, so force a present to move the highlight.
             state.force_present = true;
             state.window.request_redraw();
@@ -258,7 +342,7 @@ impl App {
         // neighbor, shrink toward the window edge. So on the right pane of a split, Left grows
         // it leftward and Right shrinks it — the border follows the key. ~10% per press.
         const STEP: f32 = 1.1;
-        state.layout.resize_directional(dir, STEP);
+        state.tab_mut().layout.resize_directional(dir, STEP);
         Self::resize_panes(state);
         state.force_present = true;
         state.window.request_redraw();
@@ -373,7 +457,7 @@ impl App {
         if let Some(state) = self.state.as_mut() {
             state.keymap = build_keymap(&self.config);
             state.palette = palette;
-            for pane in state.panes.values_mut() {
+            for pane in state.tabs.iter_mut().flat_map(|tab| tab.panes.values_mut()) {
                 pane.term.set_palette(palette);
                 pane.term.set_default_cursor_shape(cursor_shape);
             }

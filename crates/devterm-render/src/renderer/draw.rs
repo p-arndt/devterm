@@ -9,7 +9,8 @@ use crate::{PaneView, Renderer, push_frame};
 
 impl Renderer {
     /// Render one frame: the tiled layout `panes`, then an optional floating `overlay`
-    /// drawn on top.
+    /// drawn on top. `chrome` is an optional UI strip (the tab bar) drawn in the base
+    /// layer like a pane but without separators or a focus frame.
     ///
     /// The renderer draws all backgrounds before all glyphs, so a naive single-layer pass
     /// would let the base panes' *text* bleed over a pane stacked on top of them. To make
@@ -22,6 +23,7 @@ impl Renderer {
         &mut self,
         panes: &[PaneView],
         overlay: Option<&PaneView>,
+        chrome: Option<&PaneView>,
     ) -> Result<(), wgpu::SurfaceError> {
         let frame = self.surface.get_current_texture()?;
         let view = frame
@@ -34,7 +36,10 @@ impl Renderer {
         let mut bg: Vec<BgInstance> = Vec::new();
         let mut glyphs: Vec<GlyphInstance> = Vec::new();
 
-        // --- base layer: the tiled layout panes ---
+        // --- base layer: window chrome (borderless), then the tiled layout panes ---
+        if let Some(chrome) = chrome {
+            self.build_pane(chrome, surface_w, surface_h, &mut bg, &mut glyphs);
+        }
         for pane in panes {
             self.build_pane(pane, surface_w, surface_h, &mut bg, &mut glyphs);
         }

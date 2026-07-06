@@ -16,6 +16,14 @@ pub enum Action {
     SplitVertical,
     /// Close the focused pane.
     ClosePane,
+    /// Open a new tab (with a fresh shell pane) and switch to it.
+    NewTab,
+    /// Close the current tab, dropping all of its panes.
+    CloseTab,
+    /// Switch to the tab to the right (wrapping).
+    NextTab,
+    /// Switch to the tab to the left (wrapping).
+    PrevTab,
     /// Move focus to the pane on the left.
     FocusLeft,
     /// Move focus to the pane on the right.
@@ -56,10 +64,14 @@ pub enum Action {
 
 impl Action {
     /// All actions, in declaration order. Used to prove presets are exhaustive.
-    pub const ALL: [Action; 21] = [
+    pub const ALL: [Action; 25] = [
         Action::SplitHorizontal,
         Action::SplitVertical,
         Action::ClosePane,
+        Action::NewTab,
+        Action::CloseTab,
+        Action::NextTab,
+        Action::PrevTab,
         Action::FocusLeft,
         Action::FocusRight,
         Action::FocusUp,
@@ -86,6 +98,10 @@ impl Action {
             Action::SplitHorizontal => "split-horizontal",
             Action::SplitVertical => "split-vertical",
             Action::ClosePane => "close-pane",
+            Action::NewTab => "new-tab",
+            Action::CloseTab => "close-tab",
+            Action::NextTab => "next-tab",
+            Action::PrevTab => "prev-tab",
             Action::FocusLeft => "focus-left",
             Action::FocusRight => "focus-right",
             Action::FocusUp => "focus-up",

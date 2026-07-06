@@ -43,16 +43,30 @@ impl App {
         )
     }
 
-    /// Pixel rectangles of every pane laid out over the current window size.
-    fn pixel_rects(state: &AppState) -> Vec<(PaneId, Rect)> {
-        state.layout.compute(Self::window_rect(state))
+    /// Height of the always-visible tab bar strip in physical pixels (one cell row).
+    pub(super) fn tab_bar_px(state: &AppState) -> f32 {
+        state.renderer.cell_metrics().height
     }
 
-    /// Re-derive every pane's own cols/rows from its pixel rectangle and resize its model +
-    /// child. Call after any layout change (resize, split, close, scale/font change).
+    /// The pixel rectangle the layout tree tiles: the window minus the tab bar strip.
+    fn layout_rect(state: &AppState) -> Rect {
+        let win = Self::window_rect(state);
+        let bar = Self::tab_bar_px(state);
+        Rect::new(0.0, bar, win.w, (win.h - bar).max(1.0))
+    }
+
+    /// Pixel rectangles of every pane of the active tab laid out below the tab bar.
+    fn pixel_rects(state: &AppState) -> Vec<(PaneId, Rect)> {
+        state.tab().layout.compute(Self::layout_rect(state))
+    }
+
+    /// Re-derive every active-tab pane's own cols/rows from its pixel rectangle and resize
+    /// its model + child. Call after any layout change (resize, split, close, scale/font
+    /// change, tab switch). Background tabs are caught up when they become active.
     pub(super) fn resize_panes(state: &mut AppState) {
+        let active = state.active_tab;
         for (id, area) in Self::pixel_rects(state) {
-            if let Some(pane) = state.panes.get_mut(&id) {
+            if let Some(pane) = state.tabs[active].panes.get_mut(&id) {
                 let (cols, rows) = state.renderer.grid_size_for(
                     area.w.round().max(1.0) as u32,
                     area.h.round().max(1.0) as u32,
@@ -130,7 +144,8 @@ impl App {
         if state.overlay_visible {
             state.overlay.as_ref()
         } else {
-            state.panes.get(&state.layout.focused())
+            let tab = state.tab();
+            tab.panes.get(&tab.layout.focused())
         }
     }
 
@@ -139,8 +154,9 @@ impl App {
         if state.overlay_visible {
             state.overlay.as_mut()
         } else {
-            let focused = state.layout.focused();
-            state.panes.get_mut(&focused)
+            let tab = state.tab_mut();
+            let focused = tab.layout.focused();
+            tab.panes.get_mut(&focused)
         }
     }
 
@@ -149,7 +165,7 @@ impl App {
         if state.overlay_visible {
             return Self::overlay_grid(state).1;
         }
-        let focused = state.layout.focused();
+        let focused = state.tab().layout.focused();
         Self::pixel_rects(state)
             .into_iter()
             .find(|(id, _)| *id == focused)
@@ -182,43 +198,57 @@ impl App {
     /// The decision itself is the pure [`should_present`], which also folds in the byte-burst
     /// settle window and the DECSET-2026 synchronized-update skip.
     pub(super) fn redraw(state: &mut AppState, config: &Config, event_loop: &ActiveEventLoop) {
-        // Pump each pane's PTY. Iterate over a snapshot of the ids so we can `get_mut`.
-        let ids: Vec<PaneId> = state.panes.keys().copied().collect();
-        let mut exited: Vec<PaneId> = Vec::new();
-        for id in ids {
-            let Some(pane) = state.panes.get_mut(&id) else {
-                continue;
-            };
-            while let Ok(event) = pane.events.try_recv() {
-                match event {
-                    PtyEvent::Output(bytes) => pane.term.advance(&bytes),
-                    PtyEvent::Exited(_code) => exited.push(id),
+        // Pump every pane's PTY in every tab — background tabs keep their shells flowing
+        // (and their event channels drained) even though only the active tab is drawn.
+        let mut exited: Vec<(usize, PaneId)> = Vec::new();
+        for (tab_index, tab) in state.tabs.iter_mut().enumerate() {
+            for (&id, pane) in tab.panes.iter_mut() {
+                while let Ok(event) = pane.events.try_recv() {
+                    match event {
+                        PtyEvent::Output(bytes) => pane.term.advance(&bytes),
+                        PtyEvent::Exited(_code) => exited.push((tab_index, id)),
+                    }
                 }
-            }
-            let writes = pane.term.drain_pty_writes();
-            if !writes.is_empty() {
-                let _ = pane.pty.write(&writes);
+                let writes = pane.term.drain_pty_writes();
+                if !writes.is_empty() {
+                    let _ = pane.pty.write(&writes);
+                }
             }
         }
 
-        // Reap panes whose child exited: close them in the layout and drop the pane. If that
-        // empties the window, quit.
+        // Reap panes whose child exited: close them in their tab's layout and drop the
+        // pane. A tab whose last pane exited is dropped whole; when no tab remains, quit.
         let had_exits = !exited.is_empty();
-        for id in exited {
-            if !state.panes.contains_key(&id) {
+        let mut dead_tabs: Vec<usize> = Vec::new();
+        for (tab_index, id) in exited {
+            let tab = &mut state.tabs[tab_index];
+            if !tab.panes.contains_key(&id) {
                 continue;
             }
-            match state.layout.close(id) {
+            match tab.layout.close(id) {
                 Ok(()) => {
-                    state.panes.remove(&id);
+                    tab.panes.remove(&id);
                 }
                 Err(_) => {
-                    // The last pane's child exited: nothing left to show.
-                    event_loop.exit();
-                    return;
+                    if !dead_tabs.contains(&tab_index) {
+                        dead_tabs.push(tab_index);
+                    }
                 }
             }
         }
+        dead_tabs.sort_unstable();
+        for tab_index in dead_tabs.into_iter().rev() {
+            state.tabs.remove(tab_index);
+            if state.active_tab > tab_index {
+                state.active_tab -= 1;
+            }
+        }
+        if state.tabs.is_empty() {
+            // The last tab's last child exited: nothing left to show.
+            event_loop.exit();
+            return;
+        }
+        state.active_tab = state.active_tab.min(state.tabs.len() - 1);
         if had_exits {
             Self::resize_panes(state);
             state.force_present = true;
@@ -245,7 +275,7 @@ impl App {
             }
         }
 
-        let focused = state.layout.focused();
+        let focused = state.tab().layout.focused();
         // Only the active pane's synchronized-update state gates tearing (matching the
         // frozen contract): the end sequence arrives as more output and wakes us again. The
         // active pane is the floating terminal while it is shown, else the focused layout pane.
@@ -257,7 +287,8 @@ impl App {
                 .overlay
                 .as_ref()
                 .is_some_and(|overlay| overlay.term.dirty());
-        let any_dirty = overlay_dirty || state.panes.values().any(|pane| pane.term.dirty());
+        // Background tabs are not drawn, so only the active tab's panes gate a present.
+        let any_dirty = overlay_dirty || state.tab().panes.values().any(|pane| pane.term.dirty());
 
         let now = Instant::now();
         let since_byte = now.saturating_duration_since(state.last_output);
@@ -284,10 +315,19 @@ impl App {
             return;
         }
 
+        // The active tab's panes tile the unit square minus the tab bar strip; this is the
+        // unit-space twin of `layout_rect` (same fractions, so pixels line up exactly).
+        let win = Self::window_rect(state);
+        let bar_frac = Self::tab_bar_px(state) / win.h;
+        let areas = state
+            .tab()
+            .layout
+            .compute(Rect::new(0.0, bar_frac, 1.0, 1.0 - bar_frac));
+
         // Re-snapshot only the panes that changed; reuse the cache for the rest.
-        let areas = state.layout.compute(Rect::UNIT);
+        let active = state.active_tab;
         for (id, _) in &areas {
-            if let Some(pane) = state.panes.get_mut(id)
+            if let Some(pane) = state.tabs[active].panes.get_mut(id)
                 && (pane.last_snapshot.is_none() || pane.term.dirty())
             {
                 pane.last_snapshot = Some(pane.term.snapshot());
@@ -320,7 +360,7 @@ impl App {
         };
         let base_hidden: Option<Snapshot> = base_focused
             .filter(|_| blink_off)
-            .and_then(|id| state.panes.get(&id))
+            .and_then(|id| state.tab().panes.get(&id))
             .and_then(|pane| pane.last_snapshot.as_ref())
             .map(&make_hidden);
         let overlay_hidden: Option<Snapshot> = state
@@ -330,13 +370,29 @@ impl App {
             .and_then(|overlay| overlay.last_snapshot.as_ref())
             .map(&make_hidden);
 
+        // The tab bar strip, synthesized fresh each present (it is one row; cheap). Owned
+        // here so its `PaneView` below can borrow it for the render call.
+        let bar_cols = state
+            .renderer
+            .grid_size_for(win.w.round().max(1.0) as u32, win.h.round().max(1.0) as u32)
+            .0;
+        let bar_snapshot =
+            super::tabbar::snapshot(&state.tabs, state.active_tab, &state.palette, bar_cols);
+        let bar_view = PaneView {
+            area: Rect::new(0.0, 0.0, 1.0, bar_frac),
+            snapshot: &bar_snapshot,
+            focused: false,
+        };
+
         let mut views: Vec<PaneView> = Vec::with_capacity(areas.len() + 1);
         for (id, area) in &areas {
             let is_focused = base_focused == Some(*id);
             let snapshot: &Snapshot = match (is_focused, base_hidden.as_ref()) {
                 // Focused pane in the cursor's hidden blink phase: use the suppressed copy.
                 (true, Some(hidden)) => hidden,
-                _ => match state
+                // Index the tab directly so the snapshot borrow pins only `state.tabs`,
+                // leaving `state.renderer` free for the render call below.
+                _ => match state.tabs[active]
                     .panes
                     .get(id)
                     .and_then(|pane| pane.last_snapshot.as_ref())
@@ -391,13 +447,18 @@ impl App {
         };
 
         state.window.pre_present_notify();
-        match state.renderer.render(&views, overlay_view.as_ref()) {
+        match state
+            .renderer
+            .render(&views, overlay_view.as_ref(), Some(&bar_view))
+        {
             Ok(()) => {}
             Err(wgpu::SurfaceError::Lost) | Err(wgpu::SurfaceError::Outdated) => {
                 // Reconfigure the surface at the current size and retry once.
                 let size = state.window.inner_size();
                 state.renderer.resize(size.width, size.height);
-                let _ = state.renderer.render(&views, overlay_view.as_ref());
+                let _ = state
+                    .renderer
+                    .render(&views, overlay_view.as_ref(), Some(&bar_view));
             }
             Err(wgpu::SurfaceError::OutOfMemory) => {
                 log::error!("wgpu surface out of memory; exiting");
@@ -453,14 +514,31 @@ impl App {
         Some((col, line))
     }
 
+    /// What the pointer is over on the tab bar, or `None` when it is below the bar. Any
+    /// `Some` consumes the click, so the caller does not also start a selection or
+    /// gutter drag.
+    pub(super) fn tab_bar_click(state: &AppState) -> Option<super::tabbar::BarClick> {
+        let bar = Self::tab_bar_px(state);
+        if state.pointer.1 >= bar as f64 {
+            return None;
+        }
+        let win = Self::window_rect(state);
+        let cols = state
+            .renderer
+            .grid_size_for(win.w.round().max(1.0) as u32, win.h.round().max(1.0) as u32)
+            .0;
+        let col = (state.pointer.0 as f32 / state.renderer.cell_metrics().width.max(1.0)) as u16;
+        Some(super::tabbar::hit(&state.tabs, cols, col))
+    }
+
     /// Begin a selection at the pointer, focusing the pane it lands in.
     pub(super) fn begin_selection(state: &mut AppState) {
         let Some(id) = Self::pane_at(state, state.pointer) else {
             return;
         };
-        state.layout.focus(id);
+        state.tab_mut().layout.focus(id);
         if let Some((col, line)) = Self::pane_local(state, id, state.pointer)
-            && let Some(pane) = state.panes.get_mut(&id)
+            && let Some(pane) = state.tab_mut().panes.get_mut(&id)
         {
             pane.term.start_selection(col, line, SelectionMode::Simple);
         }
@@ -470,9 +548,9 @@ impl App {
 
     /// Extend the active selection in the focused pane to the pointer.
     pub(super) fn extend_selection(state: &mut AppState) {
-        let focused = state.layout.focused();
+        let focused = state.tab().layout.focused();
         if let Some((col, line)) = Self::pane_local(state, focused, state.pointer)
-            && let Some(pane) = state.panes.get_mut(&focused)
+            && let Some(pane) = state.tab_mut().panes.get_mut(&focused)
         {
             pane.term.update_selection(col, line);
             state.force_present = true;
@@ -485,8 +563,8 @@ impl App {
     /// The split divider under `pointer`, if any, with a few px of grab padding.
     pub(super) fn gutter_at(state: &AppState, (px, py): (f64, f64)) -> Option<Gutter> {
         let (px, py) = (px as f32, py as f32);
-        let rect = Self::window_rect(state);
-        state.layout.gutters(rect).into_iter().find(|g| {
+        let rect = Self::layout_rect(state);
+        state.tab().layout.gutters(rect).into_iter().find(|g| {
             let b = g.bounds;
             px >= b.x - GUTTER_HIT_PAD
                 && px <= b.x + b.w + GUTTER_HIT_PAD
@@ -551,8 +629,9 @@ impl App {
             return;
         };
         // Re-fetch the boundary so its (moved) bounds give the current split length.
-        let rect = Self::window_rect(state);
+        let rect = Self::layout_rect(state);
         let Some(g) = state
+            .tab()
             .layout
             .gutters(rect)
             .into_iter()
@@ -570,7 +649,7 @@ impl App {
             d.last = cur;
         }
         let frac = delta_px / length;
-        if frac != 0.0 && state.layout.drag_gutter(drag.id, frac) {
+        if frac != 0.0 && state.tab_mut().layout.drag_gutter(drag.id, frac) {
             Self::resize_panes(state);
             state.force_present = true;
             state.window.request_redraw();
