@@ -13,6 +13,8 @@ mod app;
 mod keymap;
 mod update;
 
+use std::path::PathBuf;
+
 use anyhow::Result;
 use winit::event_loop::{ControlFlow, EventLoop};
 
@@ -27,6 +29,20 @@ fn main() -> Result<()> {
             .default_filter_or("info,wgpu_core=warn,wgpu_hal=error,naga=warn"),
     )
     .init();
+
+    // `devterm [PATH]` — open in PATH, like `code <dir>`. With no argument the inherited
+    // working directory (i.e. wherever the shell launched us) is used as-is. Setting the
+    // process CWD here means every pane, tab and split inherits it via `cwd: None`. All our
+    // own paths (config in %APPDATA%, the exe for self-update) are absolute, so this is safe.
+    if let Some(dir) = std::env::args_os().nth(1).filter(|a| !is_flag(a)) {
+        let path = PathBuf::from(&dir);
+        if let Err(err) = std::env::set_current_dir(&path) {
+            log::warn!(
+                "cannot open in {}: {err}; using the current directory",
+                path.display()
+            );
+        }
+    }
 
     let config = Config::load(&Config::default_path()).unwrap_or_default();
 
@@ -47,4 +63,10 @@ fn main() -> Result<()> {
     event_loop.run_app(&mut app)?;
 
     Ok(())
+}
+
+/// True for `-`-prefixed arguments, reserved for future flags so they are never mistaken for
+/// a startup directory.
+fn is_flag(arg: &std::ffi::OsStr) -> bool {
+    arg.to_str().is_some_and(|s| s.starts_with('-'))
 }
