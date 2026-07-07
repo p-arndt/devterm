@@ -39,7 +39,7 @@ build:
     cargo build --workspace
 
 # Optimized release build of the whole workspace.
-release:
+build-release:
     cargo build --workspace --release
 
 # Fast type-check, no codegen — quickest correctness signal.
@@ -88,7 +88,7 @@ set-version bump="patch":
 # Cargo.lock, commit, tag `v<x.y.z>`, and push -> triggers the "Build and Publish
 # Release" workflow (Linux + Windows binaries). Refuses to run on a dirty tree.
 #   just publish            just publish minor            just publish 1.0.0
-publish bump="patch":
+release bump="patch":
     node scripts/release.mjs {{bump}}
 
 # --- misc ------------------------------------------------------------------
