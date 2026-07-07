@@ -207,8 +207,8 @@ impl Renderer {
             write_mask: wgpu::ColorWrites::ALL,
         };
 
-        const BG_ATTRS: [wgpu::VertexAttribute; 3] =
-            wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
+        const BG_ATTRS: [wgpu::VertexAttribute; 4] =
+            wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32];
         let bg_buffer_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<BgInstance>() as u64,
             step_mode: wgpu::VertexStepMode::Instance,
@@ -402,6 +402,12 @@ impl Renderer {
 
     pub fn cell_metrics(&self) -> CellMetrics {
         self.metrics
+    }
+
+    /// Distance (physical px) from the top of a cell down to the glyph baseline. Chrome
+    /// callers use it to vertically centre a text run inside a taller strip.
+    pub fn text_baseline(&self) -> f32 {
+        self.baseline
     }
 
     /// Cols/rows that fit in the given physical pixel area at current metrics.

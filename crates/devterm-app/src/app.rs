@@ -169,6 +169,9 @@ impl ApplicationHandler<UserEvent> for App {
             mouse_down: false,
             drag: None,
             cursor_icon: CursorIcon::Default,
+            hovered: None,
+            titlebar_press: None,
+            last_caption_click: None,
             last_output: now,
             pending_output: false,
             last_present: now,
@@ -281,11 +284,15 @@ impl ApplicationHandler<UserEvent> for App {
                 if state.drag.is_some() {
                     // A divider drag takes precedence over selection.
                     Self::update_gutter_drag(state);
+                } else if state.titlebar_press.is_some() {
+                    // A press that began on the caption becomes an OS window drag once moved.
+                    Self::maybe_begin_window_drag(state);
                 } else if state.mouse_down {
                     Self::extend_selection(state);
                 } else {
-                    // Idle hover: show a resize cursor over dividers.
+                    // Idle hover: resize/divider cursor plus titlebar hover highlights.
                     Self::update_hover_cursor(state);
+                    Self::update_titlebar_hover(state);
                 }
             }
 
@@ -297,38 +304,44 @@ impl ApplicationHandler<UserEvent> for App {
                 if button == MouseButton::Left {
                     match button_state {
                         ElementState::Pressed => {
-                            // A press on the tab bar switches/opens/closes tabs; a press
-                            // on a divider starts a resize drag instead of a selection; a
-                            // press inside a pane selects text as before.
-                            match Self::tab_bar_click(state) {
-                                Some(tabbar::BarClick::Tab(index)) => {
-                                    Self::activate_tab(state, index);
-                                }
-                                Some(tabbar::BarClick::Close(index)) => {
-                                    Self::close_tab_at(state, index, event_loop);
-                                }
-                                Some(tabbar::BarClick::NewTab) => {
-                                    Self::new_tab(state, &self.config, &self.proxy);
-                                }
-                                Some(tabbar::BarClick::Empty) => {}
-                                None => {
-                                    if !Self::begin_gutter_drag(state) {
-                                        state.mouse_down = true;
-                                        Self::begin_selection(state);
+                            // Priority: a window-edge resize (borderless window), then the
+                            // titlebar (tabs / window buttons / caption drag), then a split
+                            // divider drag, then a text selection inside a pane.
+                            if let Some(dir) = Self::resize_dir(state) {
+                                let _ = state.window.drag_resize_window(dir);
+                            } else if let Some(hit) = Self::titlebar_hit(state) {
+                                match hit {
+                                    tabbar::Hit::Tab(index) => Self::activate_tab(state, index),
+                                    tabbar::Hit::Close(index) => {
+                                        Self::close_tab_at(state, index, event_loop)
                                     }
+                                    tabbar::Hit::NewTab => {
+                                        Self::new_tab(state, &self.config, &self.proxy)
+                                    }
+                                    tabbar::Hit::Minimize => state.window.set_minimized(true),
+                                    tabbar::Hit::Maximize => {
+                                        let max = state.window.is_maximized();
+                                        state.window.set_maximized(!max);
+                                    }
+                                    tabbar::Hit::WindowClose => event_loop.exit(),
+                                    tabbar::Hit::Drag => Self::on_caption_press(state),
                                 }
+                            } else if !Self::begin_gutter_drag(state) {
+                                state.mouse_down = true;
+                                Self::begin_selection(state);
                             }
                         }
                         ElementState::Released => {
                             state.mouse_down = false;
                             state.drag = None;
+                            state.titlebar_press = None;
                             Self::update_hover_cursor(state);
                         }
                     }
                 } else if button == MouseButton::Middle && button_state == ElementState::Pressed {
                     // Middle click anywhere on a tab's block closes that tab.
-                    if let Some(tabbar::BarClick::Tab(index) | tabbar::BarClick::Close(index)) =
-                        Self::tab_bar_click(state)
+                    if let Some(tabbar::Hit::Tab(index) | tabbar::Hit::Close(index)) =
+                        Self::titlebar_hit(state)
                     {
                         Self::close_tab_at(state, index, event_loop);
                     }

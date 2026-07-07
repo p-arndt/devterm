@@ -45,8 +45,12 @@ const MIN_SIZE: PhysicalSize<u32> = PhysicalSize::new(800, 600);
 /// Build the window attributes for the app's window: titled and, when a monitor is
 /// available, sized/centered per [`WIDTH_FRACTION`] and [`HEIGHT_FRACTION`].
 pub fn initial_attributes(event_loop: &ActiveEventLoop, title: &str) -> WindowAttributes {
+    // Borderless: DevTerm draws its own titlebar (tabs + window buttons) into the client
+    // area like Windows Terminal, so the OS caption/frame is turned off. Resize borders and
+    // window dragging are handled manually via winit's `drag_resize_window` / `drag_window`.
     let attributes = Window::default_attributes()
         .with_title(title)
+        .with_decorations(false)
         .with_window_icon(window_icon());
 
     let Some(monitor) = event_loop

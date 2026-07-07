@@ -8,13 +8,16 @@ use bytemuck::{Pod, Zeroable};
 // GPU instance structs (POD for direct upload into vertex buffers).
 // ---------------------------------------------------------------------------
 
-/// A solid colored quad: pixel position/size + linear RGBA.
+/// A solid colored quad: pixel position/size + linear RGBA. `radius` is the corner radius
+/// in physical px; `0.0` draws a plain (unrounded) quad, the common case for cell
+/// backgrounds, the cursor and pane borders.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(crate) struct BgInstance {
     pub(crate) pos: [f32; 2],
     pub(crate) size: [f32; 2],
     pub(crate) color: [f32; 4],
+    pub(crate) radius: f32,
 }
 
 /// A textured glyph quad: pixel position/size, atlas UV rect, linear RGBA tint.
@@ -93,7 +96,10 @@ impl InstanceBuffer {
 // Inline WGSL shaders.
 // ---------------------------------------------------------------------------
 
-/// Background pipeline: solid colored instanced quads in pixel space.
+/// Background pipeline: solid colored instanced quads in pixel space. A non-zero
+/// per-instance `radius` rounds the quad's corners via a signed-distance field with 1px
+/// anti-aliasing (used by the tab bar); `radius == 0` returns the flat color unchanged, so
+/// cell backgrounds/cursor/borders are byte-identical to the un-rounded path.
 pub(crate) const BG_WGSL: &str = r#"
 struct Viewport { size: vec2<f32>, pad: vec2<f32> };
 @group(0) @binding(0) var<uniform> viewport: Viewport;
@@ -101,6 +107,11 @@ struct Viewport { size: vec2<f32>, pad: vec2<f32> };
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) color: vec4<f32>,
+    // Pixel offset of this fragment from the quad centre, the quad half-extent, and the
+    // corner radius — everything the fragment SDF needs.
+    @location(1) local: vec2<f32>,
+    @location(2) half_size: vec2<f32>,
+    @location(3) radius: f32,
 };
 
 @vertex
@@ -109,6 +120,7 @@ fn vs_main(
     @location(0) inst_pos: vec2<f32>,
     @location(1) inst_size: vec2<f32>,
     @location(2) inst_color: vec4<f32>,
+    @location(3) inst_radius: f32,
 ) -> VsOut {
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
     let p = inst_pos + corner * inst_size;
@@ -116,12 +128,24 @@ fn vs_main(
     var out: VsOut;
     out.clip = vec4<f32>(ndc, 0.0, 1.0);
     out.color = inst_color;
+    out.local = (corner - vec2<f32>(0.5, 0.5)) * inst_size;
+    out.half_size = inst_size * 0.5;
+    out.radius = inst_radius;
     return out;
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    return in.color;
+    // Rounded-box signed distance (Inigo Quilez): distance from `local` to the box shrunk
+    // by the radius, minus the radius. `fwidth` is evaluated unconditionally (it needs
+    // uniform control flow); the branch is folded into `select` so radius == 0 stays flat.
+    let r = min(in.radius, min(in.half_size.x, in.half_size.y));
+    let q = abs(in.local) - (in.half_size - vec2<f32>(r, r));
+    let dist = length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - r;
+    let aa = max(fwidth(dist), 0.0001);
+    let rounded_alpha = 1.0 - smoothstep(-aa, aa, dist);
+    let alpha = select(1.0, rounded_alpha, in.radius > 0.0);
+    return vec4<f32>(in.color.rgb, in.color.a * alpha);
 }
 "#;
 

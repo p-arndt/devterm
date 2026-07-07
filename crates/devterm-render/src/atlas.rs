@@ -15,13 +15,16 @@ use crate::font::{FontFace, select_face};
 /// Atlas key: a character in one of the four bold/italic styling combinations,
 /// tagged with the index (into the font-fallback chain) of the face that owns it.
 /// The face is part of the key so the same codepoint drawn from two different
-/// faces never collides in the cache.
+/// faces never collides in the cache. `px_q` is the quarter-pixel-quantized font
+/// size, so the same glyph at two sizes (grid text vs the smaller chrome labels)
+/// gets two atlas entries instead of colliding.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct GlyphKey {
     c: char,
     bold: bool,
     italic: bool,
     face: usize,
+    px_q: u32,
 }
 
 /// Placement + UV of a rasterized glyph inside the atlas (all in physical px / [0,1] uv).
@@ -125,6 +128,7 @@ impl Atlas {
             bold,
             italic,
             face,
+            px_q: (px * 4.0).round().max(0.0) as u32,
         };
         if let Some(info) = self.glyphs.get(&key) {
             return *info;

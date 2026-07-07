@@ -5,12 +5,13 @@ use devterm_term::CursorShape;
 
 use crate::color::{BORDER_ACCENT, BORDER_DIM, linear_rgba};
 use crate::gpu::{BgInstance, GlyphInstance};
-use crate::{PaneView, Renderer, push_frame};
+use crate::{Chrome, PaneView, Renderer, push_frame};
 
 impl Renderer {
     /// Render one frame: the tiled layout `panes`, then an optional floating `overlay`
-    /// drawn on top. `chrome` is an optional UI strip (the tab bar) drawn in the base
-    /// layer like a pane but without separators or a focus frame.
+    /// drawn on top. `chrome` is the optional window chrome (tab bar / caption strip),
+    /// drawn in the base layer *before* the panes so a tab that overhangs the strip is
+    /// overpainted by the terminal background beneath it.
     ///
     /// The renderer draws all backgrounds before all glyphs, so a naive single-layer pass
     /// would let the base panes' *text* bleed over a pane stacked on top of them. To make
@@ -23,7 +24,7 @@ impl Renderer {
         &mut self,
         panes: &[PaneView],
         overlay: Option<&PaneView>,
-        chrome: Option<&PaneView>,
+        chrome: Option<&Chrome>,
     ) -> Result<(), wgpu::SurfaceError> {
         let frame = self.surface.get_current_texture()?;
         let view = frame
@@ -36,9 +37,9 @@ impl Renderer {
         let mut bg: Vec<BgInstance> = Vec::new();
         let mut glyphs: Vec<GlyphInstance> = Vec::new();
 
-        // --- base layer: window chrome (borderless), then the tiled layout panes ---
+        // --- base layer: window chrome (caption strip), then the tiled layout panes ---
         if let Some(chrome) = chrome {
-            self.build_pane(chrome, surface_w, surface_h, &mut bg, &mut glyphs);
+            self.build_chrome(chrome, &mut bg, &mut glyphs);
         }
         for pane in panes {
             self.build_pane(pane, surface_w, surface_h, &mut bg, &mut glyphs);
@@ -149,6 +150,7 @@ impl Renderer {
             pos: [origin_x, origin_y],
             size: [pane_w, pane_h],
             color: linear_rgba(snap.default_bg, 1.0),
+            radius: 0.0,
         });
 
         // Per-cell backgrounds (only where they differ from the default).
@@ -164,6 +166,7 @@ impl Renderer {
                 ],
                 size: [cw * span, ch],
                 color: linear_rgba(cell.bg, 1.0),
+                radius: 0.0,
             });
         }
 
@@ -182,6 +185,7 @@ impl Renderer {
                         pos: [cx, cy],
                         size: [cw, ch],
                         color,
+                        radius: 0.0,
                     });
                 }
                 // Unfocused block: a thin outline instead of a filled quad.
@@ -192,11 +196,13 @@ impl Renderer {
                     pos: [cx, cy + ch - 2.0],
                     size: [cw, 2.0],
                     color,
+                    radius: 0.0,
                 }),
                 CursorShape::Beam => bg.push(BgInstance {
                     pos: [cx, cy],
                     size: [2.0, ch],
                     color,
+                    radius: 0.0,
                 }),
                 CursorShape::Hidden => {}
             }
@@ -234,6 +240,53 @@ impl Renderer {
         }
     }
 
+    /// Turn the window chrome (tab bar / caption strip) into background + glyph instances.
+    /// Rectangles carry their own corner radius (rounded tabs, square buttons); text runs
+    /// are laid out one cell width per character, mirroring [`build_pane`]'s glyph path.
+    fn build_chrome(
+        &mut self,
+        chrome: &Chrome,
+        bg: &mut Vec<BgInstance>,
+        glyphs: &mut Vec<GlyphInstance>,
+    ) {
+        for r in &chrome.rects {
+            bg.push(BgInstance {
+                pos: [r.x, r.y],
+                size: [r.w, r.h],
+                color: linear_rgba(r.color, 1.0),
+                radius: r.radius,
+            });
+        }
+
+        let px = self.font_px();
+        let cw = self.metrics.width;
+        for text in &chrome.texts {
+            // Chrome text may render smaller than the grid (UI labels vs terminal content).
+            let scale = if text.scale > 0.0 { text.scale } else { 1.0 };
+            let tpx = px * scale;
+            let tcw = cw * scale;
+            let mut pen_x = text.x;
+            let color = linear_rgba(text.color, 1.0);
+            for c in text.text.chars() {
+                if c != ' ' && c != '\0' {
+                    let info =
+                        self.atlas
+                            .glyph(&self.queue, &self.faces, tpx, c, text.bold, false);
+                    if info.width > 0.0 && info.height > 0.0 {
+                        glyphs.push(GlyphInstance {
+                            pos: [pen_x + info.left, text.baseline_y - info.top],
+                            size: [info.width, info.height],
+                            uv_min: info.uv_min,
+                            uv_max: info.uv_max,
+                            color,
+                        });
+                    }
+                }
+                pen_x += tcw;
+            }
+        }
+    }
+
     /// Physical-pixel border thickness, derived from the DPI scale (1px at scale 1,
     /// 2px at scale 2, …). Focused panes double this for a clearer highlight.
     fn border_thickness(&self) -> f32 {
@@ -259,11 +312,14 @@ impl Renderer {
             let y = pane.area.y * surface_h;
             let w = pane.area.w * surface_w;
             let h = pane.area.h * surface_h;
+            // A lone pane gets no frame at all, so the content reads as one clean surface
+            // flowing up into the tab bar (like Windows Terminal). Splits still show focus:
+            // an accent frame on the focused pane, dim separators between the rest.
+            if single {
+                continue;
+            }
             let (color, thickness) = if pane.focused {
-                // Subtle 1px accent for a lone pane; a heavier 2px accent when split.
-                (BORDER_ACCENT, if single { t } else { t * 2.0 })
-            } else if single {
-                continue; // no border on an unfocused single pane
+                (BORDER_ACCENT, t * 2.0)
             } else {
                 (BORDER_DIM, t)
             };

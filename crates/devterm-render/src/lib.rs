@@ -60,6 +60,43 @@ pub struct PaneView<'a> {
     pub focused: bool,
 }
 
+/// A filled, optionally rounded rectangle in physical pixels — one primitive of the window
+/// chrome (tab bar / caption strip). `radius == 0.0` is a plain rectangle.
+pub struct ChromeRect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub color: Rgb,
+    pub radius: f32,
+}
+
+/// A run of text drawn at a physical-pixel baseline as part of the window chrome. Advances
+/// one (scaled) cell width per character (the chrome is laid out in monospace like the grid).
+pub struct ChromeText {
+    /// Left edge of the first glyph cell (physical px).
+    pub x: f32,
+    /// Baseline y (physical px).
+    pub baseline_y: f32,
+    pub text: String,
+    pub color: Rgb,
+    pub bold: bool,
+    /// Font-size multiplier relative to the terminal grid font (`1.0` = same size). The
+    /// chrome uses slightly smaller text than the grid so labels read as UI, not content.
+    pub scale: f32,
+}
+
+/// The window chrome to paint above the panes: a flat list of rectangles and text runs in
+/// physical pixels, produced by the app's tab-bar layout. Drawn in the base layer *before*
+/// the panes, so a tab that extends past the strip's bottom edge is cleanly overpainted by
+/// the terminal background beneath it (this is how the active tab's bottom corners square
+/// off to connect with the pane).
+#[derive(Default)]
+pub struct Chrome {
+    pub rects: Vec<ChromeRect>,
+    pub texts: Vec<ChromeText>,
+}
+
 // ---------------------------------------------------------------------------
 // Renderer.
 // ---------------------------------------------------------------------------
@@ -114,20 +151,24 @@ fn push_frame(bg: &mut Vec<BgInstance>, x: f32, y: f32, w: f32, h: f32, t: f32, 
         pos: [x, y],
         size: [w, t],
         color: c,
+        radius: 0.0,
     });
     bg.push(BgInstance {
         pos: [x, y + h - t],
         size: [w, t],
         color: c,
+        radius: 0.0,
     });
     bg.push(BgInstance {
         pos: [x, y],
         size: [t, h],
         color: c,
+        radius: 0.0,
     });
     bg.push(BgInstance {
         pos: [x + w - t, y],
         size: [t, h],
         color: c,
+        radius: 0.0,
     });
 }

@@ -88,6 +88,16 @@ pub(super) struct AppState {
     /// Current window cursor icon; tracked so we only call `set_cursor_icon` on change.
     pub(super) cursor_icon: CursorIcon,
 
+    // --- borderless titlebar interaction --------------------------------------
+    /// The titlebar element currently under the pointer, if any; drives hover highlights.
+    pub(super) hovered: Option<super::tabbar::Hit>,
+    /// Set on a left-press in the caption drag area: the press position, held until the
+    /// pointer moves far enough to begin an OS window drag (so a stationary click can still
+    /// be recognized as a double-click to maximize).
+    pub(super) titlebar_press: Option<(f64, f64)>,
+    /// Time + position of the last caption press, for double-click (maximize) detection.
+    pub(super) last_caption_click: Option<(Instant, (f64, f64))>,
+
     // --- frame-timing / anti-flicker state ------------------------------------
     /// Instant of the most recent PTY wake (byte burst); drives coalescing.
     pub(super) last_output: Instant,

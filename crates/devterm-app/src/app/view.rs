@@ -3,7 +3,7 @@
 //! Everything that maps the layout tree onto the window's pixels: deriving each pane's
 //! grid, painting a frame, and translating pointer coordinates into a pane and cell.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use devterm_config::Config;
 use devterm_core::{Gutter, PaneId, Rect, SplitDirection};
@@ -11,11 +11,12 @@ use devterm_pty::{PtyEvent, PtySize};
 use devterm_render::PaneView;
 use devterm_term::{CursorShape, SelectionMode, Snapshot};
 use winit::event_loop::ActiveEventLoop;
-use winit::window::CursorIcon;
+use winit::window::{CursorIcon, ResizeDirection};
 
 use super::App;
 use super::present::should_present;
 use super::state::{AppState, GutterDrag};
+use super::tabbar::{self, Hit};
 
 /// Extra hit-test padding (physical px) around a divider so it is easy to grab.
 const GUTTER_HIT_PAD: f32 = 3.0;
@@ -43,9 +44,12 @@ impl App {
         )
     }
 
-    /// Height of the always-visible tab bar strip in physical pixels (one cell row).
+    /// Height of the always-visible titlebar strip in physical pixels. Sized like Windows
+    /// Terminal's tab row (~40 logical px), but never shorter than a tab label needs.
     pub(super) fn tab_bar_px(state: &AppState) -> f32 {
-        state.renderer.cell_metrics().height
+        let scale = state.window.scale_factor() as f32;
+        let cell_h = state.renderer.cell_metrics().height;
+        (40.0 * scale).max(cell_h + 14.0 * scale).round()
     }
 
     /// The pixel rectangle the layout tree tiles: the window minus the tab bar strip.
@@ -370,19 +374,27 @@ impl App {
             .and_then(|overlay| overlay.last_snapshot.as_ref())
             .map(&make_hidden);
 
-        // The tab bar strip, synthesized fresh each present (it is one row; cheap). Owned
-        // here so its `PaneView` below can borrow it for the render call.
-        let bar_cols = state
-            .renderer
-            .grid_size_for(win.w.round().max(1.0) as u32, win.h.round().max(1.0) as u32)
-            .0;
-        let bar_snapshot =
-            super::tabbar::snapshot(&state.tabs, state.active_tab, &state.palette, bar_cols);
-        let bar_view = PaneView {
-            area: Rect::new(0.0, 0.0, 1.0, bar_frac),
-            snapshot: &bar_snapshot,
-            focused: false,
-        };
+        // The titlebar chrome, synthesized fresh each present (cheap: a handful of rects +
+        // glyphs). The layout is the shared source of truth for the paint and the hit-test.
+        let metrics = state.renderer.cell_metrics();
+        let baseline = state.renderer.text_baseline();
+        let scale = state.window.scale_factor() as f32;
+        let bar_layout = super::tabbar::layout(
+            &state.tabs,
+            win.w,
+            Self::tab_bar_px(state),
+            metrics.width,
+            scale,
+        );
+        let chrome = super::tabbar::build_chrome(
+            &bar_layout,
+            state.active_tab,
+            state.hovered,
+            state.window.is_maximized(),
+            &state.palette,
+            metrics,
+            baseline,
+        );
 
         let mut views: Vec<PaneView> = Vec::with_capacity(areas.len() + 1);
         for (id, area) in &areas {
@@ -449,7 +461,7 @@ impl App {
         state.window.pre_present_notify();
         match state
             .renderer
-            .render(&views, overlay_view.as_ref(), Some(&bar_view))
+            .render(&views, overlay_view.as_ref(), Some(&chrome))
         {
             Ok(()) => {}
             Err(wgpu::SurfaceError::Lost) | Err(wgpu::SurfaceError::Outdated) => {
@@ -458,7 +470,7 @@ impl App {
                 state.renderer.resize(size.width, size.height);
                 let _ = state
                     .renderer
-                    .render(&views, overlay_view.as_ref(), Some(&bar_view));
+                    .render(&views, overlay_view.as_ref(), Some(&chrome));
             }
             Err(wgpu::SurfaceError::OutOfMemory) => {
                 log::error!("wgpu surface out of memory; exiting");
@@ -514,21 +526,105 @@ impl App {
         Some((col, line))
     }
 
-    /// What the pointer is over on the tab bar, or `None` when it is below the bar. Any
-    /// `Some` consumes the click, so the caller does not also start a selection or
-    /// gutter drag.
-    pub(super) fn tab_bar_click(state: &AppState) -> Option<super::tabbar::BarClick> {
-        let bar = Self::tab_bar_px(state);
-        if state.pointer.1 >= bar as f64 {
+    /// The current titlebar geometry (shared source of truth for paint + hit-test).
+    fn titlebar_layout(state: &AppState) -> tabbar::Layout {
+        let win = Self::window_rect(state);
+        let scale = state.window.scale_factor() as f32;
+        tabbar::layout(
+            &state.tabs,
+            win.w,
+            Self::tab_bar_px(state),
+            state.renderer.cell_metrics().width,
+            scale,
+        )
+    }
+
+    /// What the pointer is over on the titlebar, or `None` when it is below the strip. A
+    /// `Some` consumes the press, so the caller does not also start a selection/gutter drag.
+    pub(super) fn titlebar_hit(state: &AppState) -> Option<Hit> {
+        if state.pointer.1 >= Self::tab_bar_px(state) as f64 {
+            return None;
+        }
+        let layout = Self::titlebar_layout(state);
+        Some(tabbar::hit(
+            &layout,
+            state.pointer.0 as f32,
+            state.pointer.1 as f32,
+        ))
+    }
+
+    /// Which window edge/corner the pointer is within grabbing distance of (for a manual
+    /// resize on the borderless window), or `None`. Never resizes a maximized window.
+    pub(super) fn resize_dir(state: &AppState) -> Option<ResizeDirection> {
+        if state.window.is_maximized() {
             return None;
         }
         let win = Self::window_rect(state);
-        let cols = state
-            .renderer
-            .grid_size_for(win.w.round().max(1.0) as u32, win.h.round().max(1.0) as u32)
-            .0;
-        let col = (state.pointer.0 as f32 / state.renderer.cell_metrics().width.max(1.0)) as u16;
-        Some(super::tabbar::hit(&state.tabs, cols, col))
+        let m = 6.0 * state.window.scale_factor() as f32;
+        let (px, py) = (state.pointer.0 as f32, state.pointer.1 as f32);
+        let left = px <= m;
+        let right = px >= win.w - m;
+        let top = py <= m;
+        let bottom = py >= win.h - m;
+        Some(match (top, bottom, left, right) {
+            (true, _, true, _) => ResizeDirection::NorthWest,
+            (true, _, _, true) => ResizeDirection::NorthEast,
+            (_, true, true, _) => ResizeDirection::SouthWest,
+            (_, true, _, true) => ResizeDirection::SouthEast,
+            (true, ..) => ResizeDirection::North,
+            (_, true, ..) => ResizeDirection::South,
+            (_, _, true, _) => ResizeDirection::West,
+            (_, _, _, true) => ResizeDirection::East,
+            _ => return None,
+        })
+    }
+
+    /// Set `state.hovered` for the titlebar element under the pointer, requesting a repaint
+    /// when it changes (so hover highlights track the pointer). Clears it below the strip.
+    pub(super) fn update_titlebar_hover(state: &mut AppState) {
+        let hovered = if state.pointer.1 < Self::tab_bar_px(state) as f64 {
+            Some(Self::titlebar_hit(state).unwrap_or(Hit::Drag))
+        } else {
+            None
+        };
+        if hovered != state.hovered {
+            state.hovered = hovered;
+            state.force_present = true;
+            state.window.request_redraw();
+        }
+    }
+
+    /// Handle a left-press on the empty caption area: a quick second press in the same spot
+    /// toggles maximize (like a titlebar double-click); otherwise arm a pending window drag
+    /// that begins once the pointer moves ([`maybe_begin_window_drag`]).
+    pub(super) fn on_caption_press(state: &mut AppState) {
+        let now = Instant::now();
+        let double = state.last_caption_click.is_some_and(|(t, (x, y))| {
+            now.duration_since(t) < Duration::from_millis(400)
+                && (state.pointer.0 - x).abs() + (state.pointer.1 - y).abs() < 6.0
+        });
+        if double {
+            let max = state.window.is_maximized();
+            state.window.set_maximized(!max);
+            state.last_caption_click = None;
+            state.titlebar_press = None;
+        } else {
+            state.last_caption_click = Some((now, state.pointer));
+            state.titlebar_press = Some(state.pointer);
+        }
+    }
+
+    /// Once a caption press has moved beyond a small threshold, hand off to the OS window
+    /// drag loop (aero-snap aware). Consumes the pending press.
+    pub(super) fn maybe_begin_window_drag(state: &mut AppState) {
+        let Some((sx, sy)) = state.titlebar_press else {
+            return;
+        };
+        let moved = (state.pointer.0 - sx).abs() + (state.pointer.1 - sy).abs();
+        if moved > 4.0 {
+            state.titlebar_press = None;
+            let _ = state.window.drag_window();
+        }
     }
 
     /// Begin a selection at the pointer, focusing the pane it lands in.
@@ -656,14 +752,22 @@ impl App {
         }
     }
 
-    /// Set the window cursor to a resize icon while hovering a divider, else the default.
+    /// Update the window cursor for what the pointer is over: a window-edge resize arrow
+    /// takes precedence, then the plain arrow anywhere on the titlebar, then a split-divider
+    /// resize arrow, else the default.
     pub(super) fn update_hover_cursor(state: &mut AppState) {
-        let icon = match Self::gutter_at(state, state.pointer) {
-            // Horizontal split => vertical divider => left/right resize.
-            Some(g) if g.axis == SplitDirection::Horizontal => CursorIcon::EwResize,
-            // Vertical split => horizontal divider => up/down resize.
-            Some(_) => CursorIcon::NsResize,
-            None => CursorIcon::Default,
+        let icon = if let Some(dir) = Self::resize_dir(state) {
+            CursorIcon::from(dir)
+        } else if state.pointer.1 < Self::tab_bar_px(state) as f64 {
+            CursorIcon::Default
+        } else {
+            match Self::gutter_at(state, state.pointer) {
+                // Horizontal split => vertical divider => left/right resize.
+                Some(g) if g.axis == SplitDirection::Horizontal => CursorIcon::EwResize,
+                // Vertical split => horizontal divider => up/down resize.
+                Some(_) => CursorIcon::NsResize,
+                None => CursorIcon::Default,
+            }
         };
         if icon != state.cursor_icon {
             state.cursor_icon = icon;
