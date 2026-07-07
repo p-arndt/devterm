@@ -46,6 +46,14 @@ mod renderer;
 // Public interface (see docs/M0_INTERFACES.md — implemented verbatim).
 // ---------------------------------------------------------------------------
 
+/// Inner padding between a pane's edge and its cell grid, in logical px (scaled by DPI at
+/// use). Keeps terminal text from touching the window border, like Windows Terminal.
+pub(crate) const CONTENT_PAD_LP: f32 = 8.0;
+
+/// Chrome UI text size in logical px (scaled by DPI at use). Fixed — independent of the
+/// terminal font size — so tab labels stay UI-sized when the grid font is zoomed.
+pub(crate) const UI_TEXT_LP: f32 = 12.5;
+
 /// Physical-pixel size of one terminal cell at the current scale factor.
 #[derive(Clone, Copy, Debug)]
 pub struct CellMetrics {
@@ -71,19 +79,25 @@ pub struct ChromeRect {
     pub radius: f32,
 }
 
-/// A run of text drawn at a physical-pixel baseline as part of the window chrome. Advances
-/// one (scaled) cell width per character (the chrome is laid out in monospace like the grid).
+/// A run of text drawn at a physical-pixel baseline as part of the window chrome.
+///
+/// With `ui: true` the run renders in the proportional UI face (Segoe UI on Windows) at
+/// the chrome's own point size, advancing by real glyph widths — application UI text, not
+/// terminal content. With `ui: false` it renders in the grid's monospace font, advancing
+/// one (scaled) cell per character.
 pub struct ChromeText {
-    /// Left edge of the first glyph cell (physical px).
+    /// Left edge of the first glyph (physical px).
     pub x: f32,
     /// Baseline y (physical px).
     pub baseline_y: f32,
     pub text: String,
     pub color: Rgb,
     pub bold: bool,
-    /// Font-size multiplier relative to the terminal grid font (`1.0` = same size). The
-    /// chrome uses slightly smaller text than the grid so labels read as UI, not content.
+    /// Font-size multiplier: on the chrome UI size (`ui: true`) or the grid font size
+    /// (`ui: false`). `1.0` = that base size.
     pub scale: f32,
+    /// Render in the proportional UI face instead of the terminal's monospace font.
+    pub ui: bool,
 }
 
 /// The window chrome to paint above the panes: a flat list of rectangles and text runs in
@@ -125,6 +139,13 @@ pub struct Renderer {
     // Font state: `faces[0]` is the primary monospace face (drives metrics); the rest
     // are the fallback chain used only when the primary lacks a codepoint.
     faces: Vec<FontFace>,
+    /// Index (into `faces`) of the proportional UI face used by the window chrome, `None`
+    /// when no sans-serif face resolved (the chrome then renders in the monospace chain).
+    /// Kept at the end of `faces` so it is also the last-resort glyph fallback.
+    ui_face: Option<usize>,
+    /// Cached per-character advances of UI-face chrome text, keyed by `(char, quantized
+    /// px)`. Interior mutability so `&self` measurement helpers can fill it.
+    ui_advances: std::cell::RefCell<std::collections::HashMap<(char, u32), f32>>,
     /// User-preferred primary family (queried first when rebuilding `faces`); `None`
     /// uses the hardcoded monospace chain.
     font_family: Option<String>,

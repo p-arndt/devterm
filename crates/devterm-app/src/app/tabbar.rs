@@ -14,7 +14,7 @@
 //! can never disagree. All coordinates here are physical pixels.
 
 use devterm_core::Rect;
-use devterm_render::{CellMetrics, Chrome, ChromeRect, ChromeText};
+use devterm_render::{Chrome, ChromeRect, ChromeText, Renderer};
 use devterm_term::{Palette, Rgb};
 
 use super::state::Tab;
@@ -49,9 +49,8 @@ const CLOSE_SIDE: f32 = 18.0;
 const TAB_TOP: f32 = 5.0;
 /// Corner radius of tab blocks.
 const TAB_RADIUS: f32 = 9.0;
-/// Chrome text size relative to the terminal grid font. UI labels are smaller than the
-/// terminal content (like Windows Terminal's Segoe UI captions next to the console text).
-const TEXT_SCALE: f32 = 0.85;
+/// Minimum label width (logical px) a tab must keep for its close button / icon to show.
+const MIN_LABEL_W: f32 = 24.0;
 
 /// What a point on the titlebar lands on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -148,28 +147,36 @@ fn humanize(title: &str) -> String {
     last.to_owned()
 }
 
-/// Truncate `s` (with a trailing ellipsis) to at most `max_chars` characters.
-fn truncate(s: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
-        return String::new();
-    }
-    if s.chars().count() <= max_chars {
+/// Truncate `s` (with a trailing ellipsis) to at most `max_w` physical px of UI text.
+fn truncate_to_width(renderer: &Renderer, s: &str, max_w: f32) -> String {
+    if renderer.ui_text_width(s, 1.0) <= max_w {
         return s.to_owned();
     }
-    if max_chars == 1 {
-        return "…".to_owned();
+    let ellipsis_w = renderer.ui_char_advance('…', 1.0);
+    let mut out = String::new();
+    let mut w = 0.0;
+    for c in s.chars() {
+        let adv = renderer.ui_char_advance(c, 1.0);
+        if w + adv + ellipsis_w > max_w {
+            break;
+        }
+        out.push(c);
+        w += adv;
     }
-    s.chars().take(max_chars - 1).collect::<String>() + "…"
+    if out.is_empty() && ellipsis_w > max_w {
+        return String::new();
+    }
+    out + "…"
 }
 
-/// Compute the full titlebar geometry for a strip `width`×`height` (physical px). `cell_w`
-/// is the monospace cell width (used to size tabs against their labels) and `scale` the DPI
-/// factor (constants above are logical px).
+/// Compute the full titlebar geometry for a strip `width`×`height` (physical px). The
+/// renderer measures the (proportional) label text; `scale` is the DPI factor (constants
+/// above are logical px).
 pub(super) fn layout(
     tabs: &[Tab],
     width: f32,
     height: f32,
-    cell_w: f32,
+    renderer: &Renderer,
     scale: f32,
 ) -> Layout {
     let s = scale;
@@ -200,12 +207,11 @@ pub(super) fn layout(
     let avail = (buttons_left - left - plus_w - tab_gap).max(0.0);
 
     // Each tab's natural width from icon + label + close, capped; then shrink uniformly if
-    // they overflow. Labels render at the (smaller) chrome text size, so measure with the
-    // scaled cell width.
+    // they overflow. Labels render proportionally, so measure them with the UI face.
     let natural: Vec<f32> = labels
         .iter()
         .map(|l| {
-            let text = l.chars().count() as f32 * cell_w * TEXT_SCALE;
+            let text = renderer.ui_text_width(l, 1.0);
             (pad_l + icon_side + icon_gap + text + text_gap + close_side + pad_r).min(tab_max)
         })
         .collect();
@@ -224,9 +230,10 @@ pub(super) fn layout(
     for (i, w) in widths.iter().copied().enumerate() {
         // Tabs float fully inside the strip: inset from the top *and* the bottom.
         let body = Rect::new(x, tab_top, w, height - 2.0 * tab_top);
-        // Only show a close button if the tab is wide enough to also fit a couple of label
-        // characters — otherwise clicking anywhere on the (tiny) tab just selects it.
-        let close_rect = if w >= pad_l + text_gap + close_side + pad_r + 2.0 * cell_w {
+        // Only show a close button if the tab is wide enough to also keep a minimal label
+        // — otherwise clicking anywhere on the (tiny) tab just selects it.
+        let min_label = MIN_LABEL_W * s;
+        let close_rect = if w >= pad_l + text_gap + close_side + pad_r + min_label {
             let cx = x + w - pad_r - close_side;
             let cy = (height - close_side) * 0.5;
             Rect::new(cx, cy, close_side, close_side)
@@ -234,12 +241,12 @@ pub(super) fn layout(
             Rect::new(0.0, 0.0, 0.0, 0.0)
         };
         // The icon needs the label to still have some room; drop it before the close button.
-        let icon_rect = if w >= pad_l + icon_side + icon_gap + close_side + pad_r + 4.0 * cell_w
-        {
-            Rect::new(x + pad_l, (height - icon_side) * 0.5, icon_side, icon_side)
-        } else {
-            Rect::new(0.0, 0.0, 0.0, 0.0)
-        };
+        let icon_rect =
+            if w >= pad_l + icon_side + icon_gap + close_side + pad_r + min_label + text_gap {
+                Rect::new(x + pad_l, (height - icon_side) * 0.5, icon_side, icon_side)
+            } else {
+                Rect::new(0.0, 0.0, 0.0, 0.0)
+            };
         tab_rects.push(TabRect {
             index: i,
             body,
@@ -319,23 +326,20 @@ fn frame(rects: &mut Vec<ChromeRect>, x: f32, y: f32, w: f32, h: f32, t: f32, co
 }
 
 /// Build the titlebar chrome (rects + text) for the current tabs, active index, hovered
-/// element and window-maximized state, tinted from `palette`. `cell_w`/`cell_h`/`baseline`
-/// come from the renderer and place/centre the label + glyph text.
+/// element and window-maximized state, tinted from `palette`. The renderer supplies the
+/// UI-font metrics that place/centre the label + glyph text.
 pub(super) fn build_chrome(
     layout: &Layout,
     active: usize,
     hovered: Option<Hit>,
     maximized: bool,
     palette: &Palette,
-    metrics: CellMetrics,
-    baseline: f32,
+    renderer: &Renderer,
 ) -> Chrome {
     let fg = palette.foreground;
     let bg = palette.background;
     let s = layout.scale;
     let h = layout.height;
-    let cell_w = metrics.width;
-    let cell_h = metrics.height;
 
     // Theme-derived tints, modeled on Windows Terminal's dark chrome: a dark strip over
     // near-black content; the active tab is a clearly *lighter*, raised rounded block with
@@ -356,8 +360,9 @@ pub(super) fn build_chrome(
     };
 
     let radius = TAB_RADIUS * s;
-    // Baseline that vertically centres a (chrome-scaled) one-cell text run in the strip.
-    let text_baseline = (h - cell_h * TEXT_SCALE) * 0.5 + baseline * TEXT_SCALE;
+    // Baseline that vertically centres a line of UI text in the strip.
+    let (ui_h, ui_ascent) = renderer.ui_line(1.0);
+    let text_baseline = (h - ui_h) * 0.5 + ui_ascent;
 
     let mut chrome = Chrome::default();
 
@@ -386,7 +391,11 @@ pub(super) fn build_chrome(
                 y: tab.body.y,
                 w: tab.body.w,
                 h: tab.body.h,
-                color: if is_active { active_bg } else { inactive_hover_bg },
+                color: if is_active {
+                    active_bg
+                } else {
+                    inactive_hover_bg
+                },
                 radius,
             });
         }
@@ -401,7 +410,7 @@ pub(super) fn build_chrome(
         // The little terminal icon: a dark rounded plate with a bright `>_` prompt mark.
         let has_icon = tab.icon.w > 0.0;
         if has_icon {
-            push_icon(&mut chrome, &tab.icon, s, cell_w, cell_h, baseline);
+            push_icon(&mut chrome, &tab.icon, s, renderer);
         }
 
         // Label, truncated to the room left of the close button.
@@ -419,7 +428,6 @@ pub(super) fn build_chrome(
                 0.0
             };
         let text_room = (tab.body.w - reserved).max(0.0);
-        let max_chars = (text_room / (cell_w * TEXT_SCALE)).floor().max(0.0) as usize;
         let text_x = tab.body.x
             + TAB_PAD_L * s
             + if has_icon {
@@ -430,11 +438,11 @@ pub(super) fn build_chrome(
         chrome.texts.push(ChromeText {
             x: text_x,
             baseline_y: text_baseline,
-            text: truncate(&tab.label, max_chars),
+            text: truncate_to_width(renderer, &tab.label, text_room),
             color: text_fg,
-            // The active tab's label is bold, like Windows Terminal's.
-            bold: is_active,
-            scale: TEXT_SCALE,
+            bold: false,
+            scale: 1.0,
+            ui: true,
         });
 
         // Close button: shown only on the active or hovered tab so inactive tabs stay clean
@@ -450,7 +458,7 @@ pub(super) fn build_chrome(
                     radius: 5.0 * s,
                 });
             }
-            push_center_glyph(&mut chrome, &tab.close, '✕', glyph, cell_w, cell_h, baseline);
+            push_center_glyph(&mut chrome, renderer, &tab.close, '✕', glyph);
         }
     }
 
@@ -486,7 +494,7 @@ pub(super) fn build_chrome(
             radius: 6.0 * s,
         });
     }
-    push_center_glyph(&mut chrome, &layout.plus, '+', glyph, cell_w, cell_h, baseline);
+    push_center_glyph(&mut chrome, renderer, &layout.plus, '+', glyph);
 
     // --- window controls ---
     // Minimize.
@@ -566,7 +574,7 @@ pub(super) fn build_chrome(
     } else {
         glyph
     };
-    push_center_glyph(&mut chrome, &layout.close, '✕', close_glyph, cell_w, cell_h, baseline);
+    push_center_glyph(&mut chrome, renderer, &layout.close, '✕', close_glyph);
 
     chrome
 }
@@ -583,13 +591,10 @@ fn push_fill(chrome: &mut Chrome, r: &Rect, color: Rgb) {
     });
 }
 
-/// Size of button glyphs (`✕`, `+`) relative to the grid font — smaller and lighter than
-/// the labels, like Windows Terminal's thin caption glyphs.
-const GLYPH_SCALE: f32 = 0.8;
-
 /// Paint a tab's terminal icon: a dark rounded plate with a bright `>_` prompt mark,
-/// evoking the Windows Terminal / PowerShell app icons without needing image assets.
-fn push_icon(chrome: &mut Chrome, r: &Rect, s: f32, cell_w: f32, cell_h: f32, baseline: f32) {
+/// evoking the Windows Terminal / PowerShell app icons without needing image assets. The
+/// mark stays in the *monospace* grid font — it depicts a prompt, not UI text.
+fn push_icon(chrome: &mut Chrome, r: &Rect, s: f32, renderer: &Renderer) {
     // Plate: a fixed dark slate blue, readable on both the strip and a raised tab block.
     chrome.rects.push(ChromeRect {
         x: r.x,
@@ -604,12 +609,14 @@ fn push_icon(chrome: &mut Chrome, r: &Rect, s: f32, cell_w: f32, cell_h: f32, ba
         radius: 3.5 * s,
     });
     // `>_` mark, centred on the plate.
+    let metrics = renderer.cell_metrics();
+    let baseline = renderer.text_baseline();
     let scale = 0.52;
-    let text_w = 2.0 * cell_w * scale;
+    let text_w = 2.0 * metrics.width * scale;
     let (cx, cy) = r.center();
     chrome.texts.push(ChromeText {
         x: cx - text_w * 0.5,
-        baseline_y: cy - cell_h * scale * 0.5 + baseline * scale,
+        baseline_y: cy - metrics.height * scale * 0.5 + baseline * scale,
         text: ">_".to_owned(),
         color: Rgb {
             r: 0xdd,
@@ -618,31 +625,26 @@ fn push_icon(chrome: &mut Chrome, r: &Rect, s: f32, cell_w: f32, cell_h: f32, ba
         },
         bold: true,
         scale,
+        ui: false,
     });
 }
 
-/// Center a single glyph horizontally and vertically inside `r`. The chrome text path draws
-/// a monospace cell from its left edge, so a lone glyph centres by placing its (scaled)
-/// cell's left edge half a cell left of `r`'s centre.
-fn push_center_glyph(
-    chrome: &mut Chrome,
-    r: &Rect,
-    c: char,
-    color: Rgb,
-    cell_w: f32,
-    cell_h: f32,
-    baseline: f32,
-) {
+/// Center a single UI-font glyph horizontally and vertically inside `r`, using its real
+/// advance and the UI line metrics.
+fn push_center_glyph(chrome: &mut Chrome, renderer: &Renderer, r: &Rect, c: char, color: Rgb) {
     if r.w <= 0.0 {
         return;
     }
+    let adv = renderer.ui_char_advance(c, 1.0);
+    let (ui_h, ui_ascent) = renderer.ui_line(1.0);
     let (cx, cy) = r.center();
     chrome.texts.push(ChromeText {
-        x: cx - cell_w * GLYPH_SCALE * 0.5,
-        baseline_y: cy - cell_h * GLYPH_SCALE * 0.5 + baseline * GLYPH_SCALE,
+        x: cx - adv * 0.5,
+        baseline_y: cy - ui_h * 0.5 + ui_ascent,
         text: c.to_string(),
         color,
         bold: false,
-        scale: GLYPH_SCALE,
+        scale: 1.0,
+        ui: true,
     });
 }

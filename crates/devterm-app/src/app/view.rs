@@ -376,14 +376,12 @@ impl App {
 
         // The titlebar chrome, synthesized fresh each present (cheap: a handful of rects +
         // glyphs). The layout is the shared source of truth for the paint and the hit-test.
-        let metrics = state.renderer.cell_metrics();
-        let baseline = state.renderer.text_baseline();
         let scale = state.window.scale_factor() as f32;
         let bar_layout = super::tabbar::layout(
             &state.tabs,
             win.w,
             Self::tab_bar_px(state),
-            metrics.width,
+            &state.renderer,
             scale,
         );
         let chrome = super::tabbar::build_chrome(
@@ -392,8 +390,7 @@ impl App {
             state.hovered,
             state.window.is_maximized(),
             &state.palette,
-            metrics,
-            baseline,
+            &state.renderer,
         );
 
         let mut views: Vec<PaneView> = Vec::with_capacity(areas.len() + 1);
@@ -519,9 +516,11 @@ impl App {
             area.w.round().max(1.0) as u32,
             area.h.round().max(1.0) as u32,
         );
-        let col = (((px as f32 - area.x) / metrics.width.max(1.0)).floor())
+        // The cell grid sits inset by the pane's content padding.
+        let pad = state.renderer.content_pad();
+        let col = (((px as f32 - area.x - pad) / metrics.width.max(1.0)).floor())
             .clamp(0.0, cols.saturating_sub(1) as f32) as u16;
-        let line = (((py as f32 - area.y) / metrics.height.max(1.0)).floor())
+        let line = (((py as f32 - area.y - pad) / metrics.height.max(1.0)).floor())
             .clamp(0.0, rows.saturating_sub(1) as f32) as u16;
         Some((col, line))
     }
@@ -534,7 +533,7 @@ impl App {
             &state.tabs,
             win.w,
             Self::tab_bar_px(state),
-            state.renderer.cell_metrics().width,
+            &state.renderer,
             scale,
         )
     }

@@ -6,6 +6,8 @@
 
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event_loop::ActiveEventLoop;
+#[cfg(target_os = "windows")]
+use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
 use winit::window::{Icon, Window, WindowAttributes};
 
 /// The app icon, baked into the binary so it's always available at runtime.
@@ -52,6 +54,11 @@ pub fn initial_attributes(event_loop: &ActiveEventLoop, title: &str) -> WindowAt
         .with_title(title)
         .with_decorations(false)
         .with_window_icon(window_icon());
+
+    // Windows 11 rounds normal windows itself but not borderless ones; ask DWM for the
+    // rounded corners explicitly so the window doesn't sit as a hard rectangle on screen.
+    #[cfg(target_os = "windows")]
+    let attributes = attributes.with_corner_preference(CornerPreference::Round);
 
     let Some(monitor) = event_loop
         .primary_monitor()

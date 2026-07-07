@@ -42,7 +42,7 @@ impl Renderer {
             self.build_chrome(chrome, &mut bg, &mut glyphs);
         }
         for pane in panes {
-            self.build_pane(pane, surface_w, surface_h, &mut bg, &mut glyphs);
+            self.build_pane(pane, surface_w, surface_h, 0.0, &mut bg, &mut glyphs);
         }
         // Pane separators + focus highlight, appended last so they blend over the
         // per-pane content. The glyph pass runs after this, so text at the very edge
@@ -53,8 +53,9 @@ impl Renderer {
 
         // --- overlay layer: the floating terminal, drawn opaquely over the base ---
         if let Some(overlay) = overlay {
-            self.build_pane(overlay, surface_w, surface_h, &mut bg, &mut glyphs);
-            self.build_borders(std::slice::from_ref(overlay), surface_w, surface_h, &mut bg);
+            self.build_overlay_decor(overlay, surface_w, surface_h, &mut bg);
+            let radius = self.overlay_radius();
+            self.build_pane(overlay, surface_w, surface_h, radius, &mut bg, &mut glyphs);
         }
 
         self.bg_instances
@@ -127,30 +128,37 @@ impl Renderer {
         pass.draw(0..4, 0..(end - start) as u32);
     }
 
-    /// Turn one pane's snapshot into background and glyph instances.
+    /// Turn one pane's snapshot into background and glyph instances. `corner_radius` rounds
+    /// the pane's base fill (used by the floating overlay); tiled panes pass `0.0`.
     fn build_pane(
         &mut self,
         pane: &PaneView,
         surface_w: f32,
         surface_h: f32,
+        corner_radius: f32,
         bg: &mut Vec<BgInstance>,
         glyphs: &mut Vec<GlyphInstance>,
     ) {
         let snap = pane.snapshot;
         let area = pane.area;
-        let origin_x = area.x * surface_w;
-        let origin_y = area.y * surface_h;
+        let pane_x = area.x * surface_w;
+        let pane_y = area.y * surface_h;
         let pane_w = area.w * surface_w;
         let pane_h = area.h * surface_h;
+        // The cell grid sits inset by the content padding; the base fill covers the full
+        // pane, so the padding shows as a quiet margin in the pane's own background.
+        let pad = self.content_pad();
+        let origin_x = pane_x + pad;
+        let origin_y = pane_y + pad;
         let cw = self.metrics.width;
         let ch = self.metrics.height;
 
         // Fill the whole pane with the default background first.
         bg.push(BgInstance {
-            pos: [origin_x, origin_y],
+            pos: [pane_x, pane_y],
             size: [pane_w, pane_h],
             color: linear_rgba(snap.default_bg, 1.0),
-            radius: 0.0,
+            radius: corner_radius,
         });
 
         // Per-cell backgrounds (only where they differ from the default).
@@ -261,17 +269,28 @@ impl Renderer {
         let px = self.font_px();
         let cw = self.metrics.width;
         for text in &chrome.texts {
-            // Chrome text may render smaller than the grid (UI labels vs terminal content).
             let scale = if text.scale > 0.0 { text.scale } else { 1.0 };
-            let tpx = px * scale;
-            let tcw = cw * scale;
+            // UI runs render in the proportional UI face at the chrome's own point size
+            // and advance by real glyph widths; mono runs render in the grid font and
+            // advance one (scaled) cell per character.
+            let tpx = if text.ui { self.ui_px() } else { px } * scale;
             let mut pen_x = text.x;
             let color = linear_rgba(text.color, 1.0);
             for c in text.text.chars() {
                 if c != ' ' && c != '\0' {
-                    let info =
+                    let info = if text.ui {
+                        self.atlas.glyph_from(
+                            &self.queue,
+                            &self.faces,
+                            self.ui_face,
+                            tpx,
+                            c,
+                            text.bold,
+                        )
+                    } else {
                         self.atlas
-                            .glyph(&self.queue, &self.faces, tpx, c, text.bold, false);
+                            .glyph(&self.queue, &self.faces, tpx, c, text.bold, false)
+                    };
                     if info.width > 0.0 && info.height > 0.0 {
                         glyphs.push(GlyphInstance {
                             pos: [pen_x + info.left, text.baseline_y - info.top],
@@ -282,7 +301,11 @@ impl Renderer {
                         });
                     }
                 }
-                pen_x += tcw;
+                pen_x += if text.ui {
+                    self.ui_char_advance(c, scale)
+                } else {
+                    cw * scale
+                };
             }
         }
     }
@@ -291,6 +314,58 @@ impl Renderer {
     /// 2px at scale 2, …). Focused panes double this for a clearer highlight.
     fn border_thickness(&self) -> f32 {
         (self.scale_factor.round() as f32).max(1.0)
+    }
+
+    /// Corner radius of the floating overlay's body (physical px).
+    fn overlay_radius(&self) -> f32 {
+        10.0 * self.scale_factor as f32
+    }
+
+    /// The floating overlay's depth treatment, drawn *under* its body: a translucent scrim
+    /// dimming the whole base layer, a soft drop shadow (stacked translucent rounded
+    /// quads), and a hairline border ring the rounded body then fills all but 1px of.
+    fn build_overlay_decor(
+        &self,
+        overlay: &PaneView,
+        surface_w: f32,
+        surface_h: f32,
+        bg: &mut Vec<BgInstance>,
+    ) {
+        let x = overlay.area.x * surface_w;
+        let y = overlay.area.y * surface_h;
+        let w = overlay.area.w * surface_w;
+        let h = overlay.area.h * surface_h;
+        let s = self.scale_factor as f32;
+        let radius = self.overlay_radius();
+
+        // Scrim: dim everything behind the overlay so it clearly owns the focus.
+        bg.push(BgInstance {
+            pos: [0.0, 0.0],
+            size: [surface_w, surface_h],
+            color: [0.0, 0.0, 0.0, 0.45],
+            radius: 0.0,
+        });
+
+        // Drop shadow: three stacked translucent rounded quads, growing outward and
+        // shifted slightly down, approximate a soft gaussian falloff.
+        for (grow, drop, alpha) in [(18.0, 6.0, 0.05), (10.0, 4.0, 0.10), (4.0, 2.0, 0.16)] {
+            let g = grow * s;
+            bg.push(BgInstance {
+                pos: [x - g, y - g + drop * s],
+                size: [w + 2.0 * g, h + 2.0 * g],
+                color: [0.0, 0.0, 0.0, alpha],
+                radius: radius + g,
+            });
+        }
+
+        // Hairline border: a rounded ring one physical px proud of the body on every side.
+        let t = self.border_thickness();
+        bg.push(BgInstance {
+            pos: [x - t, y - t],
+            size: [w + 2.0 * t, h + 2.0 * t],
+            color: [1.0, 1.0, 1.0, 0.14],
+            radius: radius + t,
+        });
     }
 
     /// Draw thin pane separators and a focus highlight into the background instances.

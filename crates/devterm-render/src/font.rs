@@ -144,6 +144,41 @@ pub(crate) fn load_font_faces(preferred: Option<&str>) -> Option<Vec<FontFace>> 
     Some(faces)
 }
 
+/// Load the proportional UI face used by the window chrome (tab labels, captions).
+///
+/// Prefers the platform's native UI family (Segoe UI on Windows) so the chrome reads as
+/// application UI rather than terminal content; `None` when no sans-serif face exists, in
+/// which case the chrome falls back to the monospace chain.
+pub(crate) fn load_ui_face() -> Option<FontFace> {
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts();
+    let candidates = [
+        // Windows 11 / 10.
+        fontdb::Family::Name("Segoe UI Variable Display"),
+        fontdb::Family::Name("Segoe UI"),
+        // Common Linux UI faces.
+        fontdb::Family::Name("Noto Sans"),
+        fontdb::Family::Name("DejaVu Sans"),
+        fontdb::Family::Name("Cantarell"),
+        // macOS.
+        fontdb::Family::Name("Helvetica Neue"),
+        // Generic alias as the last resort.
+        fontdb::Family::SansSerif,
+    ];
+    for family in candidates {
+        let query = fontdb::Query {
+            families: &[family],
+            ..Default::default()
+        };
+        if let Some(id) = db.query(&query)
+            && let Some(face) = load_face(&db, id)
+        {
+            return Some(face);
+        }
+    }
+    None
+}
+
 /// Index of the first face in `faces` whose charmap maps `c` to a non-zero glyph id.
 /// Returns 0 (the primary) when no face maps `c`, so the primary renders `notdef`.
 pub(crate) fn select_face(faces: &[FontFace], c: char) -> usize {

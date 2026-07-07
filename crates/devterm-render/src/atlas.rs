@@ -40,6 +40,14 @@ pub(crate) struct GlyphInfo {
     pub(crate) height: f32,
 }
 
+/// Whether face `i` of `faces` maps `c` to a real glyph.
+pub(crate) fn face_maps(faces: &[FontFace], i: usize, c: char) -> bool {
+    faces
+        .get(i)
+        .and_then(|f| FontRef::from_index(&f.data, f.index as usize))
+        .is_some_and(|font| font.charmap().map(c) != 0)
+}
+
 /// Coverage atlas: an `R8Unorm` texture filled on demand by a simple shelf packer.
 pub(crate) struct Atlas {
     texture: wgpu::Texture,
@@ -123,6 +131,39 @@ impl Atlas {
         italic: bool,
     ) -> GlyphInfo {
         let face = self.resolve_face(faces, c);
+        self.entry(queue, faces, face, px, c, bold, italic)
+    }
+
+    /// Like [`glyph`](Self::glyph) but drawn from `preferred` (the UI face) when that face
+    /// maps `c`, falling back to the normal fallback resolution when it does not (so `✕`
+    /// and similar symbols still render even if the UI family lacks them).
+    pub(crate) fn glyph_from(
+        &mut self,
+        queue: &wgpu::Queue,
+        faces: &[FontFace],
+        preferred: Option<usize>,
+        px: f32,
+        c: char,
+        bold: bool,
+    ) -> GlyphInfo {
+        let face = preferred
+            .filter(|&i| face_maps(faces, i, c))
+            .unwrap_or_else(|| self.resolve_face(faces, c));
+        self.entry(queue, faces, face, px, c, bold, false)
+    }
+
+    /// Cache-or-rasterize the atlas entry for `c` drawn from the given `face`.
+    #[allow(clippy::too_many_arguments)]
+    fn entry(
+        &mut self,
+        queue: &wgpu::Queue,
+        faces: &[FontFace],
+        face: usize,
+        px: f32,
+        c: char,
+        bold: bool,
+        italic: bool,
+    ) -> GlyphInfo {
         let key = GlyphKey {
             c,
             bold,

@@ -5,12 +5,21 @@
 use std::sync::Arc;
 
 use anyhow::{Context as _, anyhow};
+use swash::FontRef;
 use winit::window::Window;
 
 use crate::atlas::Atlas;
-use crate::font::{compute_metrics, load_font_faces};
+use crate::font::{FontFace, compute_metrics, load_font_faces, load_ui_face};
 use crate::gpu::{BG_WGSL, BgInstance, GLYPH_WGSL, GlyphInstance, InstanceBuffer, Viewport};
 use crate::{CellMetrics, Renderer};
+
+/// Append the proportional UI face (chrome text) to a freshly built fallback chain,
+/// returning its index; `None` (chain unchanged) when no sans-serif face resolves.
+fn append_ui_face(faces: &mut Vec<FontFace>) -> Option<usize> {
+    let face = load_ui_face()?;
+    faces.push(face);
+    Some(faces.len() - 1)
+}
 
 impl Renderer {
     /// Bind a renderer to `window`. `font_size_px` is the cell font size in physical px at
@@ -90,8 +99,11 @@ impl Renderer {
         surface.configure(&device, &config);
 
         // --- font: primary monospace face plus whatever fallback faces resolve ---
-        let faces = load_font_faces(None)
+        let mut faces = load_font_faces(None)
             .context("no monospace font found via fontdb (Cascadia/Consolas/JetBrains/any)")?;
+        // The proportional UI face (chrome labels) rides at the end of the chain, where it
+        // doubles as the last-resort glyph fallback.
+        let ui_face = append_ui_face(&mut faces);
 
         // --- viewport uniform + bind group (group 0) ---
         let viewport_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -306,6 +318,8 @@ impl Renderer {
             glyph_instances,
             atlas,
             faces,
+            ui_face,
+            ui_advances: Default::default(),
             font_family: None,
             base_font_px: font_size_px,
             scale_factor,
@@ -344,6 +358,7 @@ impl Renderer {
         self.metrics = metrics;
         self.baseline = baseline;
         self.atlas.reset();
+        self.ui_advances.borrow_mut().clear();
     }
 
     /// DPI scale change; rebuild glyph metrics/atlas as needed.
@@ -379,7 +394,8 @@ impl Renderer {
             return;
         }
         // Only swap in the new chain if it actually loads; otherwise keep the current one.
-        if let Some(faces) = load_font_faces(family.as_deref()) {
+        if let Some(mut faces) = load_font_faces(family.as_deref()) {
+            self.ui_face = append_ui_face(&mut faces);
             self.faces = faces;
             self.font_family = family;
             self.recompute_metrics();
@@ -410,10 +426,22 @@ impl Renderer {
         self.baseline
     }
 
-    /// Cols/rows that fit in the given physical pixel area at current metrics.
+    /// Inner padding (physical px) between a pane's edge and its cell grid — the breathing
+    /// room modern terminals leave so text never touches the window border.
+    pub fn content_pad(&self) -> f32 {
+        (crate::CONTENT_PAD_LP * self.scale_factor as f32).round()
+    }
+
+    /// Cols/rows that fit in the given physical pixel area at current metrics, after the
+    /// content padding ([`content_pad`](Self::content_pad)) is reserved on every side.
     pub fn grid_size_for(&self, width_px: u32, height_px: u32) -> (u16, u16) {
-        let cols = (width_px as f32 / self.metrics.width).floor().max(1.0);
-        let rows = (height_px as f32 / self.metrics.height).floor().max(1.0);
+        let pad = 2.0 * self.content_pad();
+        let cols = ((width_px as f32 - pad) / self.metrics.width)
+            .floor()
+            .max(1.0);
+        let rows = ((height_px as f32 - pad) / self.metrics.height)
+            .floor()
+            .max(1.0);
         (
             cols.min(u16::MAX as f32) as u16,
             rows.min(u16::MAX as f32) as u16,
@@ -423,6 +451,56 @@ impl Renderer {
     /// Current physical pixel font size (base size times DPI scale).
     pub(crate) fn font_px(&self) -> f32 {
         self.base_font_px * self.scale_factor as f32
+    }
+
+    /// Physical pixel size of chrome UI text at `scale == 1.0`. Fixed in logical px
+    /// (independent of the terminal font size) so the chrome reads as application UI.
+    pub(crate) fn ui_px(&self) -> f32 {
+        crate::UI_TEXT_LP * self.scale_factor as f32
+    }
+
+    /// Line height and baseline (ascent) of chrome UI text at the given scale, physical px.
+    pub fn ui_line(&self, scale: f32) -> (f32, f32) {
+        let px = self.ui_px() * scale;
+        let idx = self.ui_face.unwrap_or(0);
+        let face = &self.faces[idx];
+        match FontRef::from_index(&face.data, face.index as usize) {
+            Some(font) => {
+                let m = font.metrics(&[]).scale(px);
+                (m.ascent + m.descent, m.ascent)
+            }
+            None => (px * 1.25, px),
+        }
+    }
+
+    /// Horizontal advance of `c` in chrome UI text at the given scale (physical px).
+    /// Resolves faces exactly like the draw path (UI face first, fallback chain when it
+    /// lacks the character) so measurement and painting always agree.
+    pub fn ui_char_advance(&self, c: char, scale: f32) -> f32 {
+        let px = self.ui_px() * scale;
+        let key = (c, (px * 4.0).round().max(0.0) as u32);
+        if let Some(&adv) = self.ui_advances.borrow().get(&key) {
+            return adv;
+        }
+        let idx = self
+            .ui_face
+            .filter(|&i| crate::atlas::face_maps(&self.faces, i, c))
+            .unwrap_or_else(|| crate::font::select_face(&self.faces, c));
+        let face = &self.faces[idx];
+        let adv = FontRef::from_index(&face.data, face.index as usize)
+            .map(|font| {
+                let glyph_id = font.charmap().map(c);
+                font.glyph_metrics(&[]).scale(px).advance_width(glyph_id)
+            })
+            .filter(|adv| *adv > 0.0)
+            .unwrap_or(px * 0.5);
+        self.ui_advances.borrow_mut().insert(key, adv);
+        adv
+    }
+
+    /// Width of `text` in chrome UI text at the given scale (physical px).
+    pub fn ui_text_width(&self, text: &str, scale: f32) -> f32 {
+        text.chars().map(|c| self.ui_char_advance(c, scale)).sum()
     }
 
     /// Push the current surface size into the viewport uniform buffer.
